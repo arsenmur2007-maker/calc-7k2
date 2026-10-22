@@ -176,6 +176,12 @@ h1,h2,h3{margin:0; font-weight:600}
   max-width:480px; margin:0 auto; background:var(--fg); color:var(--bg); padding:12px 16px; border-radius:14px; font-size:14px; box-shadow:0 8px 24px rgba(0,0,0,.25)}
 @media (prefers-reduced-motion: reduce){ *{transition:none !important; animation:none !important} }
 
+.editbox{background:var(--surface-2); border-radius:14px; padding:14px; display:flex; flex-direction:column; gap:12px; margin:4px 0 10px}
+.editbox .inp{background:var(--surface)}
+.dot.xfer{background:var(--muted)}
+#shType{grid-auto-flow:row; grid-template-columns:repeat(3,1fr)}
+textarea.inp{resize:vertical; font-size:13px}
+
 </style></head><body>
 <main id="app"></main>
 <nav id="nav" aria-label="Разделы"><div class="in">
@@ -211,6 +217,12 @@ const L = (function () {
   CATS.forEach(function (c) { catById[c.id] = c; });
 
   // Все суммы хранятся в копейках (целые числа).
+  function defaultAccounts() {
+    return [
+      { id: 'main', name: 'Основная карта', kind: 'debit', start: 0, cashback: 0, round: true },
+      { id: 'cash', name: 'Наличные', kind: 'cash', start: 0, cashback: 0, round: false }
+    ];
+  }
   function defaults() {
     const pct = {};
     CATS.forEach(function (c) { pct[c.id] = c.pct; });
@@ -220,18 +232,32 @@ const L = (function () {
       credit: { balance: 0, setAt: 0, due: '', fromSavings: 0 },
       roundStep: 10000,
       roundDefault: true,
+      accounts: defaultAccounts(),
+      lastAcc: 'main',
       setupDone: false
     };
   }
   function withDefaults(s) {
     const d = defaults();
     s = s || {};
+    let accounts;
+    if (Array.isArray(s.accounts) && s.accounts.length) {
+      accounts = s.accounts.map(function (a) {
+        return { id: String(a.id), name: String(a.name || 'Счёт'), kind: a.kind === 'cash' ? 'cash' : 'debit',
+          start: Number(a.start) || 0, cashback: Number(a.cashback) || 0, round: a.round === true };
+      });
+    } else {
+      accounts = d.accounts;
+      if (s.roundDefault === false) accounts[0].round = false;
+    }
     return {
       income: Object.assign(d.income, s.income || {}),
       pct: Object.assign(d.pct, s.pct || {}),
       credit: Object.assign(d.credit, s.credit || {}),
       roundStep: s.roundStep > 0 ? s.roundStep : d.roundStep,
       roundDefault: s.roundDefault !== false,
+      accounts: accounts,
+      lastAcc: accounts.some(function (a) { return a.id === s.lastAcc; }) ? s.lastAcc : accounts[0].id,
       setupDone: s.setupDone === true
     };
   }
@@ -274,12 +300,42 @@ const L = (function () {
     });
   }
 
+  // Счёт записи. Старые записи без поля acc: наличные -> cash, кредитка -> credit, остальное -> main.
+  function accOf(x) {
+    if (x.acc) return x.acc;
+    return x.m === 'k' ? 'credit' : x.m === 'n' ? 'cash' : 'main';
+  }
+  function isCredit(x) { return accOf(x) === 'credit'; }
+
+  // Как все записи меняют остаток счёта (в копейках).
+  function accountNet(months, id) {
+    let n = 0;
+    allTx(months).forEach(function (x) {
+      const a = accOf(x);
+      if (x.t === 'e') { if (a === id) n -= x.a + (x.r || 0); }
+      else if (x.t === 'i') { if (a === id) n += x.a; }
+      else if (x.t === 'p' || x.t === 's') { if (a === id) n -= x.a; }
+      else if (x.t === 't') { if (a === id) n -= x.a; if (x.to === id) n += x.a; }
+    });
+    return n;
+  }
+  function accountBalance(months, acc) { return acc.start + accountNet(months, acc.id); }
+  function accountUsed(months, id) {
+    return allTx(months).some(function (x) { return accOf(x) === id || x.to === id; });
+  }
+  function cashbackMonth(months, acc, mk) {
+    if (!acc.cashback) return 0;
+    let sum = 0;
+    monthTx(months, mk).forEach(function (x) { if (x.t === 'e' && accOf(x) === acc.id) sum += x.a; });
+    return Math.floor(sum * acc.cashback / 100);
+  }
+
   function creditDebt(months, s) {
     const c = s.credit;
     let d = c.balance;
     allTx(months).forEach(function (x) {
       if (x.ts > c.setAt) {
-        if (x.t === 'e' && x.m === 'k') d += x.a;
+        if (x.t === 'e' && isCredit(x)) d += x.a;
         if (x.t === 'p') d -= x.a;
       }
     });
@@ -295,7 +351,7 @@ const L = (function () {
         spent[x.c] = (spent[x.c] || 0) + x.a;
         spentTotal += x.a;
         round += x.r || 0;
-        if (x.m === 'k' && x.ts > s.credit.setAt) creditBuys += x.a;
+        if (isCredit(x) && x.ts > s.credit.setAt) creditBuys += x.a;
       } else if (x.t === 's') {
         saved[x.c] = (saved[x.c] || 0) + x.a;
         saveTotal += x.a;
@@ -358,8 +414,10 @@ const L = (function () {
 
   return { GROUPS: GROUPS, CATS: CATS, catById: catById, defaults: defaults, withDefaults: withDefaults,
     dateStr: dateStr, monthOf: monthOf, shiftMonth: shiftMonth, daysIn: daysIn, parseMoney: parseMoney,
-    roundUp: roundUp, allTx: allTx, monthTx: monthTx, creditDebt: creditDebt, calcMonth: calcMonth,
-    status: status, creditStats: creditStats, totalRound: totalRound, totalSaved: totalSaved };
+    roundUp: roundUp, allTx: allTx, monthTx: monthTx, accOf: accOf, isCredit: isCredit, accountNet: accountNet,
+    accountBalance: accountBalance, accountUsed: accountUsed, cashbackMonth: cashbackMonth,
+    creditDebt: creditDebt, calcMonth: calcMonth, status: status, creditStats: creditStats,
+    totalRound: totalRound, totalSaved: totalSaved };
 })();
 
 
@@ -368,7 +426,7 @@ const L = (function () {
   const $ = function (s) { return document.querySelector(s); };
   const app = $('#app'), sheet = $('#sheet'), toastEl = $('#toast');
   let state = { settings: L.withDefaults(null), months: {} };
-  let ui = { tab: 'home', month: L.monthOf(L.dateStr(new Date())), edit: false, creditEdit: false, sel: null, del: null };
+  let ui = { tab: 'home', month: L.monthOf(L.dateStr(new Date())), edit: false, creditEdit: false, sel: null, del: null, accEdit: null, accDel: null };
   let ready = false, mode = 'memory', persistOk = true, sh = null, pendingRender = false, toastT = null;
 
   /* ---------- форматирование ---------- */
@@ -396,6 +454,12 @@ const L = (function () {
     left: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg>',
     right: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5l7 7-7 7"/></svg>'
   };
+
+  /* ---------- счета ---------- */
+  function accById(id) { return state.settings.accounts.filter(function (a) { return a.id === id; })[0] || null; }
+  function accName(id) { if (id === 'credit') return 'Кредитка'; const a = accById(id); return a ? a.name : 'Счёт удалён'; }
+  function defaultAcc() { const s = state.settings; return accById(s.lastAcc) ? s.lastAcc : s.accounts[0].id; }
+  function otherAcc(id) { const o = state.settings.accounts.filter(function (a) { return a.id !== id; })[0]; return o ? o.id : null; }
 
   /* ---------- хранение ---------- */
   const Store = (function () {
@@ -480,21 +544,23 @@ const L = (function () {
       '<button class="iconbtn" data-a="m+" aria-label="Следующий месяц">' + ico.right + '</button></div>';
   }
   function txInfo(x) {
-    let title, dot, amt = '', cls = '';
-    if (x.t === 'e') { const c = L.catById[x.c]; title = c ? c.name : 'Расход'; dot = c ? c.g : 'want'; amt = fmt(-x.a, x.a % 100 !== 0); }
-    else if (x.t === 'i') { title = 'Разовый доход'; dot = 'inc'; amt = '+' + fmt(x.a, x.a % 100 !== 0); cls = ' in'; }
-    else if (x.t === 'p') { title = 'Погашение кредитки'; dot = 'pay'; amt = fmt(-x.a, x.a % 100 !== 0); }
-    else { const c = L.catById[x.c]; title = c ? c.name : 'Накопления'; dot = 'save'; amt = '→ ' + fmt(x.a, x.a % 100 !== 0); }
-    let sub = x.n ? esc(x.n) : '';
-    if (x.t === 'e' && x.m === 'k') sub += ' <span class="tag">кредитка</span>';
-    if (x.t === 'e' && x.m === 'n') sub += ' <span class="tag soft">наличные</span>';
+    let title, dot, amt = '', cls = '', sub = x.n ? esc(x.n) : '';
+    const dec = x.a % 100 !== 0, acc = L.accOf(x);
+    if (x.t === 'e') { const c = L.catById[x.c]; title = c ? c.name : 'Расход'; dot = c ? c.g : 'want'; amt = fmt(-x.a, dec); }
+    else if (x.t === 'i') { title = 'Разовый доход'; dot = 'inc'; amt = '+' + fmt(x.a, dec); cls = ' in'; }
+    else if (x.t === 'p') { title = 'Погашение кредитки'; dot = 'pay'; amt = fmt(-x.a, dec); }
+    else if (x.t === 't') { title = 'Перевод'; dot = 'xfer'; amt = fmt(x.a, dec); }
+    else { const c = L.catById[x.c]; title = c ? c.name : 'Накопления'; dot = 'save'; amt = '→ ' + fmt(x.a, dec); }
+    if (x.t === 't') sub += ' <span class="tag soft">' + esc(accName(acc)) + ' → ' + esc(accName(x.to)) + '</span>';
+    else if (acc === 'credit') sub += ' <span class="tag">Кредитка</span>';
+    else sub += ' <span class="tag soft">' + esc(accName(acc)) + '</span>';
     if (x.t === 'e' && x.r > 0) sub += ' <span class="tag soft">+' + fmt(x.r, x.r % 100 !== 0) + ' в копилку</span>';
     return { title: title, dot: dot, amt: amt, cls: cls, sub: sub };
   }
   function rowHtml(x, interactive) {
     const i = txInfo(x);
     const inner = '<span class="dot ' + i.dot + '"></span><span class="main"><span class="t">' + esc(i.title) + '</span>' +
-      (i.sub ? '<span class="small muted">' + i.sub + '</span>' : '') + '</span><span class="amt num' + i.cls + '">' + i.amt + '</span>';
+      '<span class="small muted">' + i.sub + '</span></span><span class="amt num' + i.cls + '">' + i.amt + '</span>';
     if (!interactive) return '<div class="row">' + inner + '</div>';
     let h = '<button class="row" data-a="sel" data-id="' + esc(x.id) + '" data-mk="' + esc(L.monthOf(x.d)) + '">' + inner + '</button>';
     if (ui.sel === x.id) {
@@ -505,12 +571,13 @@ const L = (function () {
   }
 
   /* ---------- экраны ---------- */
-
   function setupCard() {
-    return '<section class="card"><h2>Быстрая настройка</h2><div class="small muted">Введите доход и долг по кредитке, чтобы появились лимиты. Данные остаются только на этом телефоне.</div>' +
+    return '<section class="card"><h2>Быстрая настройка</h2><div class="small muted">Введите доход, остатки и долг по кредитке, чтобы появились лимиты. Данные остаются только на этом телефоне.</div>' +
       '<div class="field"><label for="su-sal">Зарплата в месяц, ₽</label><input id="su-sal" class="inp num" inputmode="decimal" placeholder="0"></div>' +
       '<div class="field"><label for="su-st">Стипендия, ₽</label><input id="su-st" class="inp num" inputmode="decimal" placeholder="0"></div>' +
       '<div class="field"><label for="su-ex">Другой регулярный доход, ₽</label><input id="su-ex" class="inp num" inputmode="decimal" placeholder="0"></div>' +
+      '<div class="field"><label for="su-card">Сейчас на основной карте, ₽</label><input id="su-card" class="inp num" inputmode="decimal" placeholder="0"></div>' +
+      '<div class="field"><label for="su-cash">Наличных сейчас, ₽</label><input id="su-cash" class="inp num" inputmode="decimal" placeholder="0"></div>' +
       '<div class="field"><label for="su-cb">Долг по кредитке, ₽ (если есть)</label><input id="su-cb" class="inp num" inputmode="decimal" placeholder="0"></div>' +
       '<div class="field"><label for="su-cd">Закрыть кредитку до</label><input id="su-cd" class="inp" type="date"></div>' +
       '<div class="err" id="suErr" role="alert"></div>' +
@@ -540,6 +607,19 @@ const L = (function () {
     h += '<div class="sub num">Потрачено ' + fmt(c.spentTotal) + (c.spendPlan > 0 ? ' из ' + fmt(c.spendPlan) : '') + (pace != null ? ' · черта — норма на сегодня' : '') + '</div>';
     if (c.reserve > 0) h += '<div class="sub num">Отложено на кредитку в этом месяце: ' + fmt(c.reserve, true) + '</div>';
     h += '</section>';
+
+    // счета и наличные
+    const bals = s.accounts.map(function (a) { return { a: a, b: L.accountBalance(state.months, a) }; });
+    if (bals.some(function (x) { return x.b !== 0; })) {
+      let total = 0;
+      h += '<button class="card" data-a="go:accounts" style="text-align:left"><span class="label">Деньги сейчас</span>';
+      bals.forEach(function (x) {
+        total += x.b;
+        h += '<span class="formrow"><span>' + esc(x.a.name) + '</span><b class="num">' + fmt(x.b, x.b % 100 !== 0) + '</b></span>';
+      });
+      if (bals.length > 1) h += '<span class="formrow" style="border-top:1px solid var(--line);padding-top:10px"><span class="muted">Всего</span><b class="num">' + fmt(total, total % 100 !== 0) + '</b></span>';
+      h += '</button>';
+    }
 
     // карточки: кредитка и копилка
     let cdSub;
@@ -637,11 +717,43 @@ const L = (function () {
     return h;
   }
 
+  function accEditor(a) {
+    const id = esc(a.id), mk = L.monthOf(L.dateStr(new Date()));
+    const bal = L.accountBalance(state.months, a);
+    let h = '<div class="editbox">';
+    h += '<div class="field"><label for="a-n-' + id + '">Название</label><input id="a-n-' + id + '" class="inp" maxlength="24" data-f="acc.' + id + '.name" value="' + esc(a.name) + '"></div>';
+    h += '<div class="field"><label for="a-b-' + id + '">Остаток сейчас, ₽</label><input id="a-b-' + id + '" class="inp num" inputmode="decimal" data-f="acc.' + id + '.bal" value="' + String((bal / 100).toFixed(2)).replace('.', ',') + '"></div>';
+    if (a.kind !== 'cash') {
+      h += '<div class="field"><label for="a-c-' + id + '">Кэшбэк по карте, %</label><input id="a-c-' + id + '" class="inp num" inputmode="decimal" data-f="acc.' + id + '.cb" value="' + (a.cashback || 0) + '"></div>';
+      h += '<div class="formrow"><span>Округлять покупки в копилку</span><button class="switch' + (a.round ? ' on' : '') + '" role="switch" aria-checked="' + (a.round ? 'true' : 'false') + '" aria-label="Округлять покупки" data-a="accround" data-id="' + id + '"></button></div>';
+      if (a.cashback > 0) h += '<div class="small muted num">Кэшбэк за этот месяц: примерно ' + fmt(L.cashbackMonth(state.months, a, mk), true) + '</div>';
+    }
+    if (L.accountUsed(state.months, a.id)) h += '<div class="small muted">Счёт нельзя удалить: по нему есть записи.</div>';
+    else if (state.settings.accounts.length < 2) h += '<div class="small muted">Это единственный счёт, его нельзя удалить.</div>';
+    else if (ui.accDel === a.id) h += '<div class="actions" style="padding:0"><span class="small" style="align-self:center">Удалить счёт?</span><button class="btn danger sm" data-a="accdelyes" data-id="' + id + '">Да, удалить</button><button class="btn ghost sm" data-a="accdelno">Отмена</button></div>';
+    else h += '<div><button class="btn ghost sm" data-a="accdel" data-id="' + id + '">Удалить счёт</button></div>';
+    return h + '</div>';
+  }
+
   function viewAccounts() {
     const s = state.settings, today = L.dateStr(new Date()), cs = L.creditStats(state.months, s, today);
     const curMonth = L.monthOf(today), c = L.calcMonth(state.months, s, curMonth);
     let h = '<h1 style="font-family:var(--font-display);font-size:17px;font-weight:500;min-height:44px;display:flex;align-items:center">Счета и долги</h1>';
 
+    // мои счета
+    let total = 0;
+    h += '<section class="card"><div class="grouphead"><h2>Мои счета</h2><button class="link small" data-a="accadd">+ Добавить</button></div><div class="list">';
+    s.accounts.forEach(function (a) {
+      const bal = L.accountBalance(state.months, a); total += bal;
+      const meta = (a.kind === 'cash' ? 'наличные' : 'карта') + (a.cashback > 0 ? ' · кэшбэк ' + a.cashback + '%' : '') + (a.round ? ' · округление' : '');
+      h += '<button class="row" data-a="accsel" data-id="' + esc(a.id) + '"><span class="dot ' + (a.kind === 'cash' ? 'want' : 'need') + '"></span><span class="main"><span class="t">' + esc(a.name) + '</span><span class="small muted">' + esc(meta) + '</span></span><span class="amt num">' + fmt(bal, bal % 100 !== 0) + '</span></button>';
+      if (ui.accEdit === a.id) h += accEditor(a);
+    });
+    h += '</div>';
+    if (s.accounts.length > 1) h += '<div class="formrow" style="border-top:1px solid var(--line);padding-top:12px"><span class="muted">Всего на счетах</span><b class="num">' + fmt(total, total % 100 !== 0) + '</b></div>';
+    h += '<div class="small muted">Нажмите на счёт, чтобы поправить остаток, кэшбэк или округление. Снятие наличных и переводы между счетами записывайте через «+» → «Перевод».</div></section>';
+
+    // кредитка
     h += '<section class="card"><div class="grouphead"><h2>Кредитка</h2><button class="link small" data-a="cedit">' + (ui.creditEdit ? 'Готово' : 'Изменить') + '</button></div>';
     h += '<div class="stat num' + ((cs.days != null && cs.days < 0 && cs.debt > 0) ? ' bad' : '') + '" style="font-size:28px">' + (cs.debt > 0 ? fmt(cs.debt, true) : '0 ₽') + '</div>';
     if (cs.debt <= 0) h += '<div class="hint good">Долг закрыт. Карту можно закрывать.</div>';
@@ -662,12 +774,10 @@ const L = (function () {
 
     h += '<section class="card"><h2>Копилка округлений</h2><div class="grid2"><div><div class="label">За месяц</div><div class="stat num">' + fmt(c.round) + '</div></div>' +
       '<div><div class="label">Всего</div><div class="stat num">' + fmt(L.totalRound(state.months)) + '</div></div></div>';
-    h += '<div class="small muted">Каждая покупка по дебетовой карте округляется вверх. Разницу банк переводит в копилку, а здесь она считается сама, когда вы вносите трату.</div>';
+    h += '<div class="small muted">Покупки с карты округляются вверх, разницу банк переводит в копилку. Округление включается для каждой карты отдельно: нажмите на карту в «Моих счетах».</div>';
     h += '<div class="formrow"><label for="f-rs">Округлять до</label><select id="f-rs" class="inp" style="width:120px" data-f="roundStep">';
     [1000, 5000, 10000, 50000].forEach(function (v) { h += '<option value="' + v + '"' + (s.roundStep === v ? ' selected' : '') + '>' + (v / 100) + ' ₽</option>'; });
-    h += '</select></div>';
-    h += '<div class="formrow"><span>Округлять по умолчанию</span><button class="switch' + (s.roundDefault ? ' on' : '') + '" role="switch" aria-checked="' + (s.roundDefault ? 'true' : 'false') + '" aria-label="Округлять по умолчанию" data-a="rdef"></button></div>';
-    h += '</section>';
+    h += '</select></div></section>';
 
     h += '<section class="card"><h2>Накопления и инвестиции</h2><div class="stat num">' + fmt(L.totalSaved(state.months)) + '</div>' +
       '<div class="small muted">Переводы на инвестиционный счёт и в подушку безопасности. Рост или падение стоимости инвестиций здесь не считается.</div>' +
@@ -704,7 +814,7 @@ const L = (function () {
   }
 
   /* ---------- окно добавления ---------- */
-  const TYPES = [['e', 'Расход'], ['i', 'Доход'], ['p', 'Погашение'], ['s', 'Накопления']];
+  const TYPES = [['e', 'Расход'], ['i', 'Доход'], ['t', 'Перевод'], ['p', 'Погашение'], ['s', 'Накопления']];
   function sheetShell() {
     let h = '<div class="in"><div class="top"><h2>Новая запись</h2><button class="btn ghost sm" data-s="close">Закрыть</button></div>';
     h += '<div class="seg" id="shType" role="group" aria-label="Тип записи">';
@@ -718,6 +828,16 @@ const L = (function () {
     h += '<button class="btn primary block" data-s="save">Сохранить</button></div>';
     return h;
   }
+  function accChips(sel, action, withCredit) {
+    let h = '<div class="chips">';
+    state.settings.accounts.forEach(function (a) { h += '<button class="chip' + (sel === a.id ? ' on' : '') + '" data-s="' + action + ':' + esc(a.id) + '">' + esc(a.name) + '</button>'; });
+    if (withCredit) h += '<button class="chip' + (sel === 'credit' ? ' on' : '') + '" data-s="' + action + ':credit">Кредитка</button>';
+    return h + '</div>';
+  }
+  function roundOn() {
+    const ac = accById(sh.acc);
+    return sh.type === 'e' && !!ac && ac.kind !== 'cash' && ac.round && sh.round;
+  }
   function drawDyn() {
     let h = '';
     if (sh.type === 'e' || sh.type === 's') {
@@ -727,19 +847,25 @@ const L = (function () {
       h += '</div></div>';
     }
     if (sh.type === 'e') {
-      h += '<div class="field"><span class="lab">Чем платили</span><div class="seg">';
-      [['d', 'Дебетовая'], ['k', 'Кредитка'], ['n', 'Наличные']].forEach(function (m) { h += '<button data-s="m:' + m[0] + '" class="' + (sh.method === m[0] ? 'on' : '') + '">' + m[1] + '</button>'; });
-      h += '</div></div>';
-      if (sh.method === 'd') h += '<div class="formrow"><span>Округлить в копилку</span><button class="switch' + (sh.round ? ' on' : '') + '" role="switch" aria-checked="' + (sh.round ? 'true' : 'false') + '" aria-label="Округлить в копилку" data-s="round"></button></div>';
+      h += '<div class="field"><span class="lab">Чем платили</span>' + accChips(sh.acc, 'acc', true) + '</div>';
+      const ac = accById(sh.acc);
+      if (ac && ac.kind !== 'cash' && ac.round) h += '<div class="formrow"><span>Округлить в копилку</span><button class="switch' + (sh.round ? ' on' : '') + '" role="switch" aria-checked="' + (sh.round ? 'true' : 'false') + '" aria-label="Округлить в копилку" data-s="round"></button></div>';
     }
     if (sh.type === 'i') {
+      h += '<div class="field"><span class="lab">Куда пришли деньги</span>' + accChips(sh.acc, 'acc', false) + '</div>';
       h += '<div class="field"><span class="lab">Откуда</span><div class="chips">';
       ['Продажа вещей', 'Подарок', 'Другое'].forEach(function (n) { h += '<button class="chip" data-s="note:' + n + '">' + n + '</button>'; });
       h += '</div></div>';
     }
     if (sh.type === 'p') {
       const d = L.creditDebt(state.months, state.settings);
+      h += '<div class="field"><span class="lab">С какого счёта платите</span>' + accChips(sh.acc, 'acc', false) + '</div>';
       h += '<div class="field"><span class="lab">Долг по кредитке: ' + fmt(d, true) + '</span><div class="chips"><button class="chip" data-s="full">Погасить весь долг</button></div></div>';
+    }
+    if (sh.type === 's') h += '<div class="field"><span class="lab">С какого счёта</span>' + accChips(sh.acc, 'acc', false) + '</div>';
+    if (sh.type === 't') {
+      h += '<div class="field"><span class="lab">Откуда</span>' + accChips(sh.acc, 'acc', false) + '</div>';
+      h += '<div class="field"><span class="lab">Куда</span>' + accChips(sh.to, 'to', false) + '</div>';
     }
     $('#shDyn').innerHTML = h;
   }
@@ -747,24 +873,29 @@ const L = (function () {
     const a = L.parseMoney($('#shAmount').value);
     const el = $('#shPrev'); let h = '';
     if (!isNaN(a) && a > 0) {
-      if (sh.type === 'e' && sh.method === 'd' && sh.round) {
-        const r = L.roundUp(a, state.settings.roundStep);
-        h = r > 0 ? '<div class="hint good num">С карты спишется ' + fmt(a + r, true) + ': покупка ' + fmt(a, true) + ' + ' + fmt(r, true) + ' в копилку</div>' : '<div class="hint num">Сумма круглая, в копилку ничего не уйдёт</div>';
-      } else if (sh.type === 'e' && sh.method === 'k') {
+      const ac = accById(sh.acc);
+      if (sh.type === 'e' && sh.acc === 'credit') {
         const d = L.creditDebt(state.months, state.settings);
         h = '<div class="hint warn num">Покупка по кредитке увеличит долг до ' + fmt(d + a, true) + '</div>';
+      } else if (sh.type === 'e' && roundOn()) {
+        const r = L.roundUp(a, state.settings.roundStep);
+        h = r > 0 ? '<div class="hint good num">С карты спишется ' + fmt(a + r, true) + ': покупка ' + fmt(a, true) + ' + ' + fmt(r, true) + ' в копилку</div>' : '<div class="hint num">Сумма круглая, в копилку ничего не уйдёт</div>';
       } else if (sh.type === 'p') {
         const d = L.creditDebt(state.months, state.settings);
         h = a > d ? '<div class="hint bad num">Платёж больше долга (' + fmt(d, true) + ')</div>' : '<div class="hint good num">Долг после платежа: ' + fmt(d - a, true) + '</div>';
       } else if (sh.type === 's') {
         h = '<div class="hint num">Запишется в накопления: ' + fmt(a, true) + '</div>';
+      } else if (sh.type === 't') {
+        h = '<div class="hint num">' + esc(accName(sh.acc)) + ' → ' + esc(accName(sh.to)) + ': ' + fmt(a, true) + '</div>';
       }
+      if (sh.type === 'e' && ac && ac.cashback > 0) h += '<div class="hint num">Кэшбэк по карте: примерно ' + fmt(Math.floor(a * ac.cashback / 100), true) + '</div>';
     }
     el.innerHTML = h;
   }
   function openSheet(preset) {
     if (!ready) { toast('Загружаю данные, подождите секунду.'); return; }
-    sh = Object.assign({ type: 'e', cat: null, method: 'd', round: state.settings.roundDefault, date: L.dateStr(new Date()) }, preset || {});
+    const acc = defaultAcc(), ac = accById(acc);
+    sh = Object.assign({ type: 'e', cat: null, acc: acc, to: otherAcc(acc), round: !!(ac && ac.round), date: L.dateStr(new Date()) }, preset || {});
     sheet.innerHTML = sheetShell(); sheet.hidden = false; document.body.style.overflow = 'hidden';
     $('#shDate').value = sh.date;
     drawDyn(); updatePreview();
@@ -773,7 +904,8 @@ const L = (function () {
   }
   function closeSheet() { sheet.hidden = true; sheet.innerHTML = ''; sh = null; document.body.style.overflow = ''; }
   function setType(t) {
-    sh.type = t; sh.cat = null; sh.method = 'd'; sh.round = state.settings.roundDefault;
+    sh.type = t; sh.cat = null; sh.acc = defaultAcc();
+    const ac = accById(sh.acc); sh.round = !!(ac && ac.round); sh.to = otherAcc(sh.acc);
     document.querySelectorAll('#shType button').forEach(function (b) { b.classList.toggle('on', b.getAttribute('data-s') === 'type:' + t); });
     $('#shErr').textContent = '';
     drawDyn(); updatePreview();
@@ -784,13 +916,21 @@ const L = (function () {
     if (isNaN(a) || a <= 0) { err.textContent = 'Введите сумму, например 560 или 56,50.'; $('#shAmount').focus(); return; }
     if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) { err.textContent = 'Выберите дату.'; return; }
     if ((sh.type === 'e' || sh.type === 's') && !sh.cat) { err.textContent = 'Выберите категорию.'; return; }
-    const x = { id: Date.now().toString(36) + Math.random().toString(36).slice(2, 7), ts: Date.now(), d: d, t: sh.type, c: sh.type === 'p' ? 'credit' : (sh.type === 'i' ? null : sh.cat), a: a, r: 0, m: 'd', n: note };
-    if (sh.type === 'e') { x.m = sh.method; if (sh.method === 'd' && sh.round) x.r = L.roundUp(a, state.settings.roundStep); }
+    if (sh.type === 't' && (!sh.to || sh.to === sh.acc)) { err.textContent = 'Выберите два разных счёта.'; return; }
+    const x = { id: Date.now().toString(36) + Math.random().toString(36).slice(2, 7), ts: Date.now(), d: d, t: sh.type, c: null, a: a, r: 0, m: 'd', n: note, acc: sh.acc };
+    if (sh.type === 'e' || sh.type === 's') x.c = sh.cat;
+    if (sh.type === 'p') x.c = 'credit';
+    if (sh.type === 't') x.to = sh.to;
+    if (sh.type === 'e') {
+      if (sh.acc === 'credit') x.m = 'k';
+      else if (roundOn()) x.r = L.roundUp(a, state.settings.roundStep);
+    }
     if (sh.type === 'p') {
       const debt = L.creditDebt(state.months, state.settings);
       if (a > debt) { err.textContent = 'Платёж больше долга. Максимум ' + fmt(debt, true) + '.'; return; }
     }
     addTx(x);
+    if (sh.acc !== 'credit' && sh.type !== 't' && state.settings.lastAcc !== sh.acc) { state.settings.lastAcc = sh.acc; Store.saveSettings(); }
     ui.month = L.monthOf(d);
     const i = txInfo(x);
     closeSheet(); render();
@@ -806,13 +946,21 @@ const L = (function () {
     else if (f === 'credit.due') { if (/^\d{4}-\d{2}-\d{2}$/.test(v)) s.credit.due = v; }
     else if (f === 'credit.fromSavings') { const k = L.parseMoney(v); if (!isNaN(k)) s.credit.fromSavings = k; }
     else if (f === 'roundStep') { const n = Number(v); if (n > 0) s.roundStep = n; }
+    else if (f.indexOf('acc.') === 0) {
+      const p = f.split('.'), a = accById(p[1]);
+      if (a) {
+        if (p[2] === 'name') { const t = String(v).trim().slice(0, 24); if (t) a.name = t; }
+        else if (p[2] === 'bal') { const k = L.parseMoney(v); if (!isNaN(k)) a.start = k - L.accountNet(state.months, a.id); }
+        else if (p[2] === 'cb') { const n = Number(String(v).replace(',', '.')); if (!isNaN(n)) a.cashback = Math.max(0, Math.min(100, Math.round(n * 10) / 10)); }
+      }
+    }
     Store.saveSettings(); render();
   }
   app.addEventListener('change', function (e) { const f = e.target.getAttribute && e.target.getAttribute('data-f'); if (f) applyField(f, e.target.value); });
   app.addEventListener('focusout', function () { if (pendingRender) { pendingRender = false; setTimeout(render, 0); } });
   app.addEventListener('click', function (e) {
     const t = e.target.closest('[data-a]'); if (!t) return;
-    const a = t.getAttribute('data-a'), id = t.getAttribute('data-id');
+    const a = t.getAttribute('data-a'), id = t.getAttribute('data-id'), s = state.settings;
     if (a === 'm-' || a === 'm+') { ui.month = L.shiftMonth(ui.month, a === 'm-' ? -1 : 1); ui.sel = ui.del = null; render(); }
     else if (a.indexOf('go:') === 0) { ui.tab = a.slice(3); ui.sel = ui.del = null; render(); window.scrollTo(0, 0); }
     else if (a === 'sel') { ui.sel = ui.sel === id ? null : id; ui.del = null; render(); }
@@ -823,30 +971,48 @@ const L = (function () {
     else if (a === 'cedit') { ui.creditEdit = !ui.creditEdit; render(); }
     else if (a === 'pay') openSheet({ type: 'p' });
     else if (a === 'savebtn') openSheet({ type: 's' });
-    else if (a === 'skipsetup') { state.settings.setupDone = true; Store.saveSettings(); render(); }
+    else if (a === 'accsel') { ui.accEdit = ui.accEdit === id ? null : id; ui.accDel = null; render(); }
+    else if (a === 'accadd') {
+      const nid = 'a' + Date.now().toString(36);
+      s.accounts.push({ id: nid, name: 'Новая карта', kind: 'debit', start: 0, cashback: 0, round: false });
+      ui.accEdit = nid; Store.saveSettings(); render();
+    }
+    else if (a === 'accround') { const ac = accById(id); if (ac) { ac.round = !ac.round; Store.saveSettings(); render(); } }
+    else if (a === 'accdel') { ui.accDel = id; render(); }
+    else if (a === 'accdelno') { ui.accDel = null; render(); }
+    else if (a === 'accdelyes') {
+      if (!L.accountUsed(state.months, id) && s.accounts.length > 1) {
+        s.accounts = s.accounts.filter(function (x) { return x.id !== id; });
+        if (s.lastAcc === id) s.lastAcc = s.accounts[0].id;
+        ui.accEdit = ui.accDel = null; Store.saveSettings(); render(); toast('Счёт удалён.');
+      }
+    }
+    else if (a === 'skipsetup') { s.setupDone = true; Store.saveSettings(); render(); }
     else if (a === 'setup') {
-      const v = function (id) { const t = $(id).value.trim(); return t === '' ? 0 : L.parseMoney(t); };
-      const sal = v('#su-sal'), st = v('#su-st'), ex = v('#su-ex'), cb = v('#su-cb');
-      if ([sal, st, ex, cb].some(isNaN)) { $('#suErr').textContent = 'Проверьте суммы: только цифры, например 45000 или 15103,07.'; return; }
-      const s = state.settings;
+      const v = function (sel) { const x = $(sel).value.trim(); return x === '' ? 0 : L.parseMoney(x); };
+      const sal = v('#su-sal'), st = v('#su-st'), ex = v('#su-ex'), cb = v('#su-cb'), card = v('#su-card'), cashv = v('#su-cash');
+      if ([sal, st, ex, cb, card, cashv].some(isNaN)) { $('#suErr').textContent = 'Проверьте суммы: только цифры, например 45000 или 15103,07.'; return; }
       s.income.salary = sal; s.income.stipend = st; s.income.extra = ex;
+      const main = accById('main') || s.accounts.filter(function (x) { return x.kind !== 'cash'; })[0];
+      const cashAcc = accById('cash') || s.accounts.filter(function (x) { return x.kind === 'cash'; })[0];
+      if (main) main.start = card - L.accountNet(state.months, main.id);
+      if (cashAcc) cashAcc.start = cashv - L.accountNet(state.months, cashAcc.id);
       if (cb > 0) { s.credit.balance = cb; s.credit.setAt = Date.now(); const dd = $('#su-cd').value; s.credit.due = /^\d{4}-\d{2}-\d{2}$/.test(dd) ? dd : ''; }
       s.setupDone = true; Store.saveSettings(); render(); toast('Настройка сохранена.');
     }
     else if (a === 'bkcopy') {
-      const json = JSON.stringify({ v: 1, settings: state.settings, months: state.months });
+      const json = JSON.stringify({ v: 2, settings: state.settings, months: state.months });
       const manual = function () { const ta = $('#bkText'); ta.value = json; ta.focus(); ta.select(); toast('Скопируйте выделенный текст вручную.'); };
       if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(json).then(function () { toast('Копия скопирована. Сохраните её в заметках.'); }, manual); else manual();
     }
     else if (a === 'bkrestore') {
       let d; try { d = JSON.parse($('#bkText').value.trim()); } catch (er) { toast('Не удалось прочитать копию.'); return; }
       if (!d || typeof d !== 'object' || !d.settings || typeof d.months !== 'object' || !d.months) { toast('Это не похоже на копию приложения.'); return; }
-      const m = {}; Object.keys(d.months).forEach(function (k) { const t = d.months[k] && d.months[k].tx; m[k] = { tx: (t && typeof t === 'object') ? t : {} }; });
+      const m = {}; Object.keys(d.months).forEach(function (k) { const tt = d.months[k] && d.months[k].tx; m[k] = { tx: (tt && typeof tt === 'object') ? tt : {} }; });
       state.settings = L.withDefaults(d.settings); state.months = m;
       Store.saveSettings(); Object.keys(m).forEach(function (k) { Store.saveMonth(k); });
       render(); toast('Данные восстановлены.');
     }
-    else if (a === 'rdef') { state.settings.roundDefault = !state.settings.roundDefault; Store.saveSettings(); render(); }
   });
   $('#nav').addEventListener('click', function (e) {
     const t = e.target.closest('button'); if (!t) return;
@@ -861,7 +1027,17 @@ const L = (function () {
     else if (a === 'save') saveSheet();
     else if (a.indexOf('type:') === 0) setType(a.slice(5));
     else if (a.indexOf('cat:') === 0) { sh.cat = a.slice(4); drawDyn(); updatePreview(); $('#shErr').textContent = ''; }
-    else if (a.indexOf('m:') === 0) { sh.method = a.slice(2); drawDyn(); updatePreview(); }
+    else if (a.indexOf('acc:') === 0) {
+      sh.acc = a.slice(4);
+      const ac = accById(sh.acc); sh.round = !!(ac && ac.round);
+      if (sh.type === 't' && sh.to === sh.acc) sh.to = otherAcc(sh.acc);
+      drawDyn(); updatePreview();
+    }
+    else if (a.indexOf('to:') === 0) {
+      sh.to = a.slice(3);
+      if (sh.to === sh.acc) sh.acc = otherAcc(sh.to);
+      drawDyn(); updatePreview();
+    }
     else if (a === 'round') { sh.round = !sh.round; drawDyn(); updatePreview(); }
     else if (a.indexOf('note:') === 0) { $('#shNote').value = a.slice(5); }
     else if (a === 'full') { const d = L.creditDebt(state.months, state.settings); $('#shAmount').value = (d / 100).toFixed(2).replace('.', ','); updatePreview(); }
@@ -875,4 +1051,4 @@ const L = (function () {
 
 </script>
 <script>if('serviceWorker' in navigator){window.addEventListener('load',function(){navigator.serviceWorker.register('sw.js').catch(function(){});});}</script>
-</body></html> 
+</body></html>
