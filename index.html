@@ -182,6 +182,34 @@ h1,h2,h3{margin:0; font-weight:600}
 #shType{grid-auto-flow:row; grid-template-columns:repeat(3,1fr)}
 textarea.inp{resize:vertical; font-size:13px}
 
+/* ---- оформление: акценты, обои, цвета карт ---- */
+:root[data-theme="light"][data-accent="blue"]{--accent:#2B5FD9; --accent-fg:#FFFFFF; --accent-soft:#DCE6FB; --save:#2B5FD9}
+:root[data-theme="dark"][data-accent="blue"]{--accent:#7FA6F5; --accent-fg:#0A1A3D; --accent-soft:#1A2A4F; --save:#7FA6F5}
+:root[data-theme="light"][data-accent="violet"]{--accent:#7040C8; --accent-fg:#FFFFFF; --accent-soft:#E4DBF6; --save:#7040C8}
+:root[data-theme="dark"][data-accent="violet"]{--accent:#B497F0; --accent-fg:#1E0F40; --accent-soft:#2E2150; --save:#B497F0}
+:root[data-theme="light"][data-accent="orange"]{--accent:#C2570C; --accent-fg:#FFFFFF; --accent-soft:#FBE3D0; --save:#C2570C}
+:root[data-theme="dark"][data-accent="orange"]{--accent:#F0954F; --accent-fg:#3A1A04; --accent-soft:#4A2B12; --save:#F0954F}
+:root[data-theme="light"][data-accent="rose"]{--accent:#C2335E; --accent-fg:#FFFFFF; --accent-soft:#F8D9E3; --save:#C2335E}
+:root[data-theme="dark"][data-accent="rose"]{--accent:#F27CA0; --accent-fg:#3D0A1E; --accent-soft:#4A1B2D; --save:#F27CA0}
+:root[data-theme="light"][data-accent="graphite"]{--accent:#3A4650; --accent-fg:#FFFFFF; --accent-soft:#E2E6EA; --save:#3A4650}
+:root[data-theme="dark"][data-accent="graphite"]{--accent:#AEB9C2; --accent-fg:#12181D; --accent-soft:#2A3238; --save:#AEB9C2}
+:root[data-theme]{--hero-track:color-mix(in srgb,var(--accent-fg) 28%,transparent); --hero-fill:var(--accent-fg); --hero-sub:color-mix(in srgb,var(--accent-fg) 82%,transparent)}
+#wall{position:fixed; inset:0; z-index:-1; background-size:cover; background-position:center}
+#wall::after{content:""; position:absolute; inset:0; background:color-mix(in srgb,var(--bg) var(--wdim,35%),transparent)}
+html[data-wall]{background:var(--bg)}
+html[data-wall] body{background:transparent}
+html[data-wall] .card, html[data-wall] .iconbtn{background:color-mix(in srgb,var(--surface) 78%,transparent); -webkit-backdrop-filter:blur(14px); backdrop-filter:blur(14px)}
+html[data-wall] #nav{background:color-mix(in srgb,var(--surface) 86%,transparent); -webkit-backdrop-filter:blur(14px); backdrop-filter:blur(14px)}
+.tag.acc{background:color-mix(in srgb,var(--c) 20%,transparent); color:var(--fg); box-shadow:inset 3px 0 0 var(--c); padding-left:9px}
+.cd{display:inline-block; width:10px; height:10px; border-radius:50%; margin-right:7px; vertical-align:baseline; flex:none}
+.chip.accchip.on{border-color:var(--c); background:color-mix(in srgb,var(--c) 22%,var(--surface)); color:var(--fg)}
+.swatches{display:flex; gap:10px; flex-wrap:wrap}
+.sw{width:36px; height:36px; border-radius:50%; background:var(--c); border:3px solid transparent; box-shadow:0 0 0 1px var(--line)}
+.sw.on{border-color:var(--surface); box-shadow:0 0 0 2px var(--fg)}
+input[type=range]{width:100%; accent-color:var(--accent)}
+.filebtn{position:relative; overflow:hidden}
+.filebtn input{position:absolute; inset:0; opacity:0; width:100%; height:100%; cursor:pointer}
+
 </style></head><body>
 <main id="app"></main>
 <nav id="nav" aria-label="Разделы"><div class="in">
@@ -217,10 +245,12 @@ const L = (function () {
   CATS.forEach(function (c) { catById[c.id] = c; });
 
   // Все суммы хранятся в копейках (целые числа).
+  const ACC_COLORS = ['#2E9E83', '#3D7BE0', '#8A5CD6', '#E0802E', '#D9436F', '#D9A441', '#4F5B66', '#2BA6C4'];
+  const ACCENTS = ['green', 'blue', 'violet', 'orange', 'rose', 'graphite'];
   function defaultAccounts() {
     return [
-      { id: 'main', name: 'Основная карта', kind: 'debit', start: 0, cashback: 0, round: true },
-      { id: 'cash', name: 'Наличные', kind: 'cash', start: 0, cashback: 0, round: false }
+      { id: 'main', name: 'Основная карта', kind: 'debit', start: 0, cashback: 0, round: true, color: ACC_COLORS[0] },
+      { id: 'cash', name: 'Наличные', kind: 'cash', start: 0, cashback: 0, round: false, color: ACC_COLORS[5] }
     ];
   }
   function defaults() {
@@ -234,6 +264,7 @@ const L = (function () {
       roundDefault: true,
       accounts: defaultAccounts(),
       lastAcc: 'main',
+      look: { mode: 'auto', accent: 'green', dim: 35 },
       setupDone: false
     };
   }
@@ -242,20 +273,28 @@ const L = (function () {
     s = s || {};
     let accounts;
     if (Array.isArray(s.accounts) && s.accounts.length) {
-      accounts = s.accounts.map(function (a) {
+      accounts = s.accounts.map(function (a, i) {
         return { id: String(a.id), name: String(a.name || 'Счёт'), kind: a.kind === 'cash' ? 'cash' : 'debit',
-          start: Number(a.start) || 0, cashback: Number(a.cashback) || 0, round: a.round === true };
+          start: Number(a.start) || 0, cashback: Number(a.cashback) || 0, round: a.round === true,
+          color: ACC_COLORS.indexOf(a.color) >= 0 ? a.color : ACC_COLORS[i % ACC_COLORS.length] };
       });
     } else {
       accounts = d.accounts;
       if (s.roundDefault === false) accounts[0].round = false;
     }
+    const lk = s.look || {};
+    const look = {
+      mode: ['auto', 'light', 'dark'].indexOf(lk.mode) >= 0 ? lk.mode : 'auto',
+      accent: ACCENTS.indexOf(lk.accent) >= 0 ? lk.accent : 'green',
+      dim: typeof lk.dim === 'number' && lk.dim >= 0 && lk.dim <= 90 ? lk.dim : 35
+    };
     return {
       income: Object.assign(d.income, s.income || {}),
       pct: Object.assign(d.pct, s.pct || {}),
       credit: Object.assign(d.credit, s.credit || {}),
       roundStep: s.roundStep > 0 ? s.roundStep : d.roundStep,
       roundDefault: s.roundDefault !== false,
+      look: look,
       accounts: accounts,
       lastAcc: accounts.some(function (a) { return a.id === s.lastAcc; }) ? s.lastAcc : accounts[0].id,
       setupDone: s.setupDone === true
@@ -345,7 +384,7 @@ const L = (function () {
   function calcMonth(months, s, mk) {
     const txs = monthTx(months, mk);
     const spent = {}, saved = {};
-    let spentTotal = 0, saveTotal = 0, round = 0, oneOff = 0, paid = 0, creditBuys = 0;
+    let spentTotal = 0, saveTotal = 0, round = 0, oneOff = 0, paid = 0, creditBuys = 0, received = 0;
     txs.forEach(function (x) {
       if (x.t === 'e') {
         spent[x.c] = (spent[x.c] || 0) + x.a;
@@ -356,7 +395,7 @@ const L = (function () {
         saved[x.c] = (saved[x.c] || 0) + x.a;
         saveTotal += x.a;
       } else if (x.t === 'i') {
-        oneOff += x.a;
+        if (x.reg) received += x.a; else oneOff += x.a;
       } else if (x.t === 'p') {
         if (x.ts > s.credit.setAt) paid += x.a;
       }
@@ -376,7 +415,7 @@ const L = (function () {
       if (c.g === 'save') savePlan += p; else spendPlan += p;
     });
     return { txs: txs, spent: spent, saved: saved, spentTotal: spentTotal, saveTotal: saveTotal, round: round,
-      oneOff: oneOff, paid: paid, income: income, reserve: reserve, available: available, plan: plan,
+      oneOff: oneOff, received: received, paid: paid, income: income, reserve: reserve, available: available, plan: plan,
       spendPlan: spendPlan, savePlan: savePlan };
   }
 
@@ -412,7 +451,7 @@ const L = (function () {
     return r;
   }
 
-  return { GROUPS: GROUPS, CATS: CATS, catById: catById, defaults: defaults, withDefaults: withDefaults,
+  return { ACC_COLORS: ACC_COLORS, ACCENTS: ACCENTS, GROUPS: GROUPS, CATS: CATS, catById: catById, defaults: defaults, withDefaults: withDefaults,
     dateStr: dateStr, monthOf: monthOf, shiftMonth: shiftMonth, daysIn: daysIn, parseMoney: parseMoney,
     roundUp: roundUp, allTx: allTx, monthTx: monthTx, accOf: accOf, isCredit: isCredit, accountNet: accountNet,
     accountBalance: accountBalance, accountUsed: accountUsed, cashbackMonth: cashbackMonth,
@@ -458,6 +497,11 @@ const L = (function () {
   /* ---------- счета ---------- */
   function accById(id) { return state.settings.accounts.filter(function (a) { return a.id === id; })[0] || null; }
   function accName(id) { if (id === 'credit') return 'Кредитка'; const a = accById(id); return a ? a.name : 'Счёт удалён'; }
+  function accColor(id) {
+    if (id === 'credit') return '#C0504D';
+    const a = accById(id); return a && a.color ? a.color : '#7A8A83';
+  }
+  function accTag(id) { return '<span class="tag acc" style="--c:' + accColor(id) + '">' + esc(accName(id)) + '</span>'; }
   function defaultAcc() { const s = state.settings; return accById(s.lastAcc) ? s.lastAcc : s.accounts[0].id; }
   function otherAcc(id) { const o = state.settings.accounts.filter(function (a) { return a.id !== id; })[0]; return o ? o.id : null; }
 
@@ -547,13 +591,12 @@ const L = (function () {
     let title, dot, amt = '', cls = '', sub = x.n ? esc(x.n) : '';
     const dec = x.a % 100 !== 0, acc = L.accOf(x);
     if (x.t === 'e') { const c = L.catById[x.c]; title = c ? c.name : 'Расход'; dot = c ? c.g : 'want'; amt = fmt(-x.a, dec); }
-    else if (x.t === 'i') { title = 'Разовый доход'; dot = 'inc'; amt = '+' + fmt(x.a, dec); cls = ' in'; }
+    else if (x.t === 'i') { title = x.reg ? (x.n || 'Регулярный доход') : 'Разовый доход'; if (x.reg) sub = ''; dot = 'inc'; amt = '+' + fmt(x.a, dec); cls = ' in'; }
     else if (x.t === 'p') { title = 'Погашение кредитки'; dot = 'pay'; amt = fmt(-x.a, dec); }
     else if (x.t === 't') { title = 'Перевод'; dot = 'xfer'; amt = fmt(x.a, dec); }
     else { const c = L.catById[x.c]; title = c ? c.name : 'Накопления'; dot = 'save'; amt = '→ ' + fmt(x.a, dec); }
-    if (x.t === 't') sub += ' <span class="tag soft">' + esc(accName(acc)) + ' → ' + esc(accName(x.to)) + '</span>';
-    else if (acc === 'credit') sub += ' <span class="tag">Кредитка</span>';
-    else sub += ' <span class="tag soft">' + esc(accName(acc)) + '</span>';
+    if (x.t === 't') sub += ' ' + accTag(acc) + ' → ' + accTag(x.to);
+    else sub += ' ' + accTag(acc);
     if (x.t === 'e' && x.r > 0) sub += ' <span class="tag soft">+' + fmt(x.r, x.r % 100 !== 0) + ' в копилку</span>';
     return { title: title, dot: dot, amt: amt, cls: cls, sub: sub };
   }
@@ -615,7 +658,7 @@ const L = (function () {
       h += '<button class="card" data-a="go:accounts" style="text-align:left"><span class="label">Деньги сейчас</span>';
       bals.forEach(function (x) {
         total += x.b;
-        h += '<span class="formrow"><span>' + esc(x.a.name) + '</span><b class="num">' + fmt(x.b, x.b % 100 !== 0) + '</b></span>';
+        h += '<span class="formrow"><span><i class="cd" style="background:' + accColor(x.a.id) + '"></i>' + esc(x.a.name) + '</span><b class="num">' + fmt(x.b, x.b % 100 !== 0) + '</b></span>';
       });
       if (bals.length > 1) h += '<span class="formrow" style="border-top:1px solid var(--line);padding-top:10px"><span class="muted">Всего</span><b class="num">' + fmt(total, total % 100 !== 0) + '</b></span>';
       h += '</button>';
@@ -686,6 +729,8 @@ const L = (function () {
     h += '<section class="card"><div class="grouphead"><h2>Доход и лимиты</h2><button class="link small" data-a="edit">' + (ui.edit ? 'Готово' : 'Настроить') + '</button></div>';
     h += '<div class="formrow"><span>Доход в месяц</span><b class="num">' + fmt(c.income) + '</b></div>';
     if (c.reserve > 0) h += '<div class="formrow"><span>Отложено на кредитку</span><b class="num">−' + fmt(c.reserve, true) + '</b></div>';
+    h += '<div class="formrow"><span>Уже получено (аванс, зарплата…)</span><b class="num">' + fmt(c.received) + '</b></div>';
+    if (c.income > c.received) h += '<div class="formrow"><span>Ещё ожидается</span><b class="num">' + fmt(c.income - c.received) + '</b></div>';
     h += '<div class="formrow"><span>Распределяется по лимитам</span><b class="num">' + fmt(c.available) + '</b></div>';
     if (c.reserve > 0) h += '<div class="hint warn">В этом месяце нужно закрыть кредитку, поэтому часть дохода зарезервирована под долг.</div>';
     if (c.oneOff > 0) h += '<div class="hint">Разовые доходы за месяц: +' + fmt(c.oneOff) + '. В лимиты они не входят, лучше отправить их в накопления.</div>';
@@ -723,6 +768,9 @@ const L = (function () {
     let h = '<div class="editbox">';
     h += '<div class="field"><label for="a-n-' + id + '">Название</label><input id="a-n-' + id + '" class="inp" maxlength="24" data-f="acc.' + id + '.name" value="' + esc(a.name) + '"></div>';
     h += '<div class="field"><label for="a-b-' + id + '">Остаток сейчас, ₽</label><input id="a-b-' + id + '" class="inp num" inputmode="decimal" data-f="acc.' + id + '.bal" value="' + String((bal / 100).toFixed(2)).replace('.', ',') + '"></div>';
+    h += '<div class="field"><span class="lab">Цвет</span><div class="swatches">';
+    L.ACC_COLORS.forEach(function (col) { h += '<button class="sw' + (a.color === col ? ' on' : '') + '" style="--c:' + col + '" aria-label="Цвет ' + col + '" data-a="acccolor" data-id="' + id + '" data-c="' + col + '"></button>'; });
+    h += '</div></div>';
     if (a.kind !== 'cash') {
       h += '<div class="field"><label for="a-c-' + id + '">Кэшбэк по карте, %</label><input id="a-c-' + id + '" class="inp num" inputmode="decimal" data-f="acc.' + id + '.cb" value="' + (a.cashback || 0) + '"></div>';
       h += '<div class="formrow"><span>Округлять покупки в копилку</span><button class="switch' + (a.round ? ' on' : '') + '" role="switch" aria-checked="' + (a.round ? 'true' : 'false') + '" aria-label="Округлять покупки" data-a="accround" data-id="' + id + '"></button></div>';
@@ -746,7 +794,7 @@ const L = (function () {
     s.accounts.forEach(function (a) {
       const bal = L.accountBalance(state.months, a); total += bal;
       const meta = (a.kind === 'cash' ? 'наличные' : 'карта') + (a.cashback > 0 ? ' · кэшбэк ' + a.cashback + '%' : '') + (a.round ? ' · округление' : '');
-      h += '<button class="row" data-a="accsel" data-id="' + esc(a.id) + '"><span class="dot ' + (a.kind === 'cash' ? 'want' : 'need') + '"></span><span class="main"><span class="t">' + esc(a.name) + '</span><span class="small muted">' + esc(meta) + '</span></span><span class="amt num">' + fmt(bal, bal % 100 !== 0) + '</span></button>';
+      h += '<button class="row" data-a="accsel" data-id="' + esc(a.id) + '"><span class="dot" style="background:' + accColor(a.id) + '"></span><span class="main"><span class="t">' + esc(a.name) + '</span><span class="small muted">' + esc(meta) + '</span></span><span class="amt num">' + fmt(bal, bal % 100 !== 0) + '</span></button>';
       if (ui.accEdit === a.id) h += accEditor(a);
     });
     h += '</div>';
@@ -783,6 +831,7 @@ const L = (function () {
       '<div class="small muted">Переводы на инвестиционный счёт и в подушку безопасности. Рост или падение стоимости инвестиций здесь не считается.</div>' +
       '<button class="btn ghost block" data-a="savebtn">Добавить накопление</button></section>';
 
+    h += lookCard();
     h += '<section class="card"><h2>Резервная копия</h2><div class="small muted">Данные хранятся только на телефоне. Скопируйте копию и сохраните в заметках, чтобы не потерять её, если удалите приложение.</div>' +
       '<button class="btn ghost block" data-a="bkcopy">Скопировать копию</button>' +
       '<textarea id="bkText" class="inp" rows="3" style="min-height:84px" placeholder="Чтобы восстановить, вставьте сюда копию"></textarea>' +
@@ -796,7 +845,63 @@ const L = (function () {
     return h;
   }
 
+  /* ---------- оформление ---------- */
+  const WKEY = 'balans-wallpaper';
+  let wallData = null;
+  try { wallData = localStorage.getItem(WKEY); } catch (e) { wallData = null; }
+  function applyLook() {
+    const lk = state.settings.look, root = document.documentElement;
+    const sysDark = !!(window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches);
+    const dark = lk.mode === 'dark' || (lk.mode === 'auto' && sysDark);
+    root.setAttribute('data-theme', dark ? 'dark' : 'light');
+    root.setAttribute('data-accent', lk.accent);
+    root.style.setProperty('--wdim', lk.dim + '%');
+    let w = document.getElementById('wall');
+    if (wallData) {
+      if (!w) { w = document.createElement('div'); w.id = 'wall'; document.body.insertBefore(w, document.body.firstChild); }
+      w.style.backgroundImage = 'url("' + wallData + '")'; root.setAttribute('data-wall', '1');
+    } else { if (w) w.remove(); root.removeAttribute('data-wall'); }
+    const m = document.querySelector('meta[name="theme-color"]');
+    if (m) { const c = getComputedStyle(root).getPropertyValue('--accent').trim(); if (c) m.setAttribute('content', c); }
+  }
+  if (window.matchMedia) { try { window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', applyLook); } catch (e) { /* старый браузер */ } }
+  function setWall(file) {
+    const fr = new FileReader();
+    fr.onload = function () {
+      const img = new Image();
+      img.onload = function () {
+        const k = Math.min(1, 1200 / Math.max(img.width, img.height));
+        const c = document.createElement('canvas'); c.width = Math.max(1, Math.round(img.width * k)); c.height = Math.max(1, Math.round(img.height * k));
+        c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+        const data = c.toDataURL('image/jpeg', 0.78);
+        try { localStorage.setItem(WKEY, data); } catch (er) { toast('Не удалось сохранить фото: не хватает места.'); return; }
+        wallData = data; render(); toast('Обои установлены.');
+      };
+      img.onerror = function () { toast('Не удалось открыть это фото.'); };
+      img.src = fr.result;
+    };
+    fr.readAsDataURL(file);
+  }
+  function lookCard() {
+    const lk = state.settings.look;
+    let h = '<section class="card"><h2>Оформление</h2>';
+    h += '<div class="field"><span class="lab">Тема</span><div class="seg" role="group" aria-label="Тема">';
+    [['auto', 'Как в телефоне'], ['light', 'Светлая'], ['dark', 'Тёмная']].forEach(function (m) { h += '<button class="' + (lk.mode === m[0] ? 'on' : '') + '" data-a="lookmode:' + m[0] + '">' + m[1] + '</button>'; });
+    h += '</div></div><div class="field"><span class="lab">Цвет приложения</span><div class="swatches">';
+    const AC = { green: '#0B6E5E', blue: '#2B5FD9', violet: '#7040C8', orange: '#C2570C', rose: '#C2335E', graphite: '#3A4650' };
+    L.ACCENTS.forEach(function (k) { h += '<button class="sw' + (lk.accent === k ? ' on' : '') + '" style="--c:' + AC[k] + '" aria-label="Цвет ' + k + '" data-a="lookacc:' + k + '"></button>'; });
+    h += '</div></div><div class="field"><span class="lab">Свои обои</span>';
+    h += '<span class="btn ghost block filebtn">' + (wallData ? 'Выбрать другое фото' : 'Выбрать фото из галереи') + '<input id="wallFile" type="file" accept="image/*" aria-label="Выбрать фото для обоев"></span>';
+    if (wallData) {
+      h += '<button class="btn ghost block" data-a="wallclear">Убрать обои</button>';
+      h += '<label class="small muted" for="f-dim">Затемнение фона</label><input id="f-dim" type="range" min="0" max="90" step="5" value="' + lk.dim + '" data-f="look.dim">';
+    }
+    h += '<div class="small muted">Фото хранится только на этом телефоне и не попадает в резервную копию.</div></div></section>';
+    return h;
+  }
+
   function render() {
+    applyLook();
     let h;
     if (ui.tab === 'home') h = viewHome(); else if (ui.tab === 'history') h = viewHistory();
     else if (ui.tab === 'budget') h = viewBudget(); else h = viewAccounts();
@@ -830,8 +935,8 @@ const L = (function () {
   }
   function accChips(sel, action, withCredit) {
     let h = '<div class="chips">';
-    state.settings.accounts.forEach(function (a) { h += '<button class="chip' + (sel === a.id ? ' on' : '') + '" data-s="' + action + ':' + esc(a.id) + '">' + esc(a.name) + '</button>'; });
-    if (withCredit) h += '<button class="chip' + (sel === 'credit' ? ' on' : '') + '" data-s="' + action + ':credit">Кредитка</button>';
+    state.settings.accounts.forEach(function (a) { h += '<button class="chip accchip' + (sel === a.id ? ' on' : '') + '" style="--c:' + accColor(a.id) + '" data-s="' + action + ':' + esc(a.id) + '"><i class="cd" style="background:' + accColor(a.id) + '"></i>' + esc(a.name) + '</button>'; });
+    if (withCredit) h += '<button class="chip accchip' + (sel === 'credit' ? ' on' : '') + '" style="--c:' + accColor('credit') + '" data-s="' + action + ':credit"><i class="cd" style="background:' + accColor('credit') + '"></i>Кредитка</button>';
     return h + '</div>';
   }
   function roundOn() {
@@ -853,8 +958,10 @@ const L = (function () {
     }
     if (sh.type === 'i') {
       h += '<div class="field"><span class="lab">Куда пришли деньги</span>' + accChips(sh.acc, 'acc', false) + '</div>';
-      h += '<div class="field"><span class="lab">Откуда</span><div class="chips">';
-      ['Продажа вещей', 'Подарок', 'Другое'].forEach(function (n) { h += '<button class="chip" data-s="note:' + n + '">' + n + '</button>'; });
+      h += '<div class="field"><span class="lab">Регулярный доход</span><div class="chips">';
+      ['Аванс', 'Зарплата', 'Стипендия', 'Другое регулярное'].forEach(function (n) { h += '<button class="chip' + (sh.reg && sh.regName === n ? ' on' : '') + '" data-s="reg:' + n + '">' + n + '</button>'; });
+      h += '</div></div><div class="field"><span class="lab">Разовый доход</span><div class="chips">';
+      ['Продажа вещей', 'Подарок', 'Другое'].forEach(function (n) { h += '<button class="chip' + (!sh.reg && sh.regName === n ? ' on' : '') + '" data-s="once:' + n + '">' + n + '</button>'; });
       h += '</div></div>';
     }
     if (sh.type === 'p') {
@@ -904,7 +1011,7 @@ const L = (function () {
   }
   function closeSheet() { sheet.hidden = true; sheet.innerHTML = ''; sh = null; document.body.style.overflow = ''; }
   function setType(t) {
-    sh.type = t; sh.cat = null; sh.acc = defaultAcc();
+    sh.type = t; sh.cat = null; sh.reg = false; sh.regName = null; sh.acc = defaultAcc();
     const ac = accById(sh.acc); sh.round = !!(ac && ac.round); sh.to = otherAcc(sh.acc);
     document.querySelectorAll('#shType button').forEach(function (b) { b.classList.toggle('on', b.getAttribute('data-s') === 'type:' + t); });
     $('#shErr').textContent = '';
@@ -921,6 +1028,7 @@ const L = (function () {
     if (sh.type === 'e' || sh.type === 's') x.c = sh.cat;
     if (sh.type === 'p') x.c = 'credit';
     if (sh.type === 't') x.to = sh.to;
+    if (sh.type === 'i' && sh.reg) x.reg = true;
     if (sh.type === 'e') {
       if (sh.acc === 'credit') x.m = 'k';
       else if (roundOn()) x.r = L.roundUp(a, state.settings.roundStep);
@@ -945,6 +1053,7 @@ const L = (function () {
     else if (f === 'credit.balance') { const k = L.parseMoney(v); if (!isNaN(k)) { s.credit.balance = k; s.credit.setAt = Date.now(); } }
     else if (f === 'credit.due') { if (/^\d{4}-\d{2}-\d{2}$/.test(v)) s.credit.due = v; }
     else if (f === 'credit.fromSavings') { const k = L.parseMoney(v); if (!isNaN(k)) s.credit.fromSavings = k; }
+    else if (f === 'look.dim') { const n = Number(v); if (n >= 0 && n <= 90) s.look.dim = n; }
     else if (f === 'roundStep') { const n = Number(v); if (n > 0) s.roundStep = n; }
     else if (f.indexOf('acc.') === 0) {
       const p = f.split('.'), a = accById(p[1]);
@@ -957,6 +1066,12 @@ const L = (function () {
     Store.saveSettings(); render();
   }
   app.addEventListener('change', function (e) { const f = e.target.getAttribute && e.target.getAttribute('data-f'); if (f) applyField(f, e.target.value); });
+  app.addEventListener('input', function (e) {
+    if (e.target.getAttribute && e.target.getAttribute('data-f') === 'look.dim') document.documentElement.style.setProperty('--wdim', e.target.value + '%');
+  });
+  app.addEventListener('change', function (e) {
+    if (e.target.id === 'wallFile' && e.target.files && e.target.files[0]) setWall(e.target.files[0]);
+  });
   app.addEventListener('focusout', function () { if (pendingRender) { pendingRender = false; setTimeout(render, 0); } });
   app.addEventListener('click', function (e) {
     const t = e.target.closest('[data-a]'); if (!t) return;
@@ -974,9 +1089,15 @@ const L = (function () {
     else if (a === 'accsel') { ui.accEdit = ui.accEdit === id ? null : id; ui.accDel = null; render(); }
     else if (a === 'accadd') {
       const nid = 'a' + Date.now().toString(36);
-      s.accounts.push({ id: nid, name: 'Новая карта', kind: 'debit', start: 0, cashback: 0, round: false });
+      const usedC = s.accounts.map(function (x) { return x.color; });
+      const freeC = L.ACC_COLORS.filter(function (c) { return usedC.indexOf(c) < 0; })[0] || L.ACC_COLORS[s.accounts.length % L.ACC_COLORS.length];
+      s.accounts.push({ id: nid, name: 'Новая карта', kind: 'debit', start: 0, cashback: 0, round: false, color: freeC });
       ui.accEdit = nid; Store.saveSettings(); render();
     }
+    else if (a === 'acccolor') { const ac = accById(id); if (ac) { ac.color = t.getAttribute('data-c'); Store.saveSettings(); render(); } }
+    else if (a.indexOf('lookmode:') === 0) { s.look.mode = a.slice(9); Store.saveSettings(); render(); }
+    else if (a.indexOf('lookacc:') === 0) { s.look.accent = a.slice(8); Store.saveSettings(); render(); }
+    else if (a === 'wallclear') { try { localStorage.removeItem(WKEY); } catch (er) { /* ничего */ } wallData = null; render(); toast('Обои убраны.'); }
     else if (a === 'accround') { const ac = accById(id); if (ac) { ac.round = !ac.round; Store.saveSettings(); render(); } }
     else if (a === 'accdel') { ui.accDel = id; render(); }
     else if (a === 'accdelno') { ui.accDel = null; render(); }
@@ -1039,7 +1160,8 @@ const L = (function () {
       drawDyn(); updatePreview();
     }
     else if (a === 'round') { sh.round = !sh.round; drawDyn(); updatePreview(); }
-    else if (a.indexOf('note:') === 0) { $('#shNote').value = a.slice(5); }
+    else if (a.indexOf('reg:') === 0) { sh.reg = true; sh.regName = a.slice(4); $('#shNote').value = sh.regName === 'Другое регулярное' ? '' : sh.regName; drawDyn(); }
+    else if (a.indexOf('once:') === 0) { sh.reg = false; sh.regName = a.slice(5); $('#shNote').value = a.slice(5); drawDyn(); }
     else if (a === 'full') { const d = L.creditDebt(state.months, state.settings); $('#shAmount').value = (d / 100).toFixed(2).replace('.', ','); updatePreview(); }
   });
   sheet.addEventListener('input', function (e) { if (e.target.id === 'shAmount') { $('#shErr').textContent = ''; updatePreview(); } });
