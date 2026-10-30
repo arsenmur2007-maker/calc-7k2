@@ -210,6 +210,23 @@ input[type=range]{width:100%; accent-color:var(--accent)}
 .filebtn{position:relative; overflow:hidden}
 .filebtn input{position:absolute; inset:0; opacity:0; width:100%; height:100%; cursor:pointer}
 
+/* ---- школа финансов ---- */
+.ck{width:26px; height:26px; border-radius:8px; border:2px solid var(--line); display:grid; place-items:center; flex:none; color:var(--accent-fg); font-size:15px; line-height:1; background:var(--surface)}
+.ck.on{background:var(--accent); border-color:var(--accent)}
+.tip{display:flex; flex-direction:column; gap:10px; padding:14px 0; border-top:1px solid var(--line)}
+.tip:first-child{border-top:0; padding-top:4px}
+.tiphead{display:flex; gap:12px; align-items:flex-start; text-align:left; width:100%}
+.tiphead .tt{flex:1; min-width:0}
+.tipbody{display:flex; flex-direction:column; gap:10px; margin-left:38px}
+.tipbody .how{background:var(--accent-soft); border-radius:12px; padding:10px 12px; font-size:14px}
+.stepno{width:26px; height:26px; border-radius:50%; background:var(--surface-2); display:grid; place-items:center; font-size:13px; font-weight:600; flex:none}
+.stepno.done{background:var(--good); color:#fff}
+.stepno.now{background:var(--accent); color:var(--accent-fg)}
+.progress{font-size:13px; color:var(--muted); white-space:nowrap}
+.wishform{display:grid; grid-template-columns:1fr 110px; gap:8px}
+.ol{margin:0; padding-left:20px; display:flex; flex-direction:column; gap:8px}
+a.link{text-decoration:underline; text-underline-offset:2px}
+
 </style></head><body>
 <main id="app"></main>
 <nav id="nav" aria-label="Разделы"><div class="in">
@@ -265,6 +282,8 @@ const L = (function () {
       accounts: defaultAccounts(),
       lastAcc: 'main',
       look: { mode: 'auto', accent: 'green', dim: 35 },
+      tips: {},
+      wishes: [],
       setupDone: false
     };
   }
@@ -288,6 +307,11 @@ const L = (function () {
       accent: ACCENTS.indexOf(lk.accent) >= 0 ? lk.accent : 'green',
       dim: typeof lk.dim === 'number' && lk.dim >= 0 && lk.dim <= 90 ? lk.dim : 35
     };
+    const tips = {};
+    if (s.tips && typeof s.tips === 'object') Object.keys(s.tips).forEach(function (k) { if (s.tips[k] === true) tips[k] = true; });
+    const wishes = Array.isArray(s.wishes) ? s.wishes.filter(function (w) { return w && w.id && w.a > 0; }).slice(-200).map(function (w) {
+      return { id: String(w.id), ts: Number(w.ts) || 0, name: String(w.name || '').slice(0, 60), a: Number(w.a) || 0, st: ['w', 'b', 'c'].indexOf(w.st) >= 0 ? w.st : 'w' };
+    }) : [];
     return {
       income: Object.assign(d.income, s.income || {}),
       pct: Object.assign(d.pct, s.pct || {}),
@@ -295,6 +319,8 @@ const L = (function () {
       roundStep: s.roundStep > 0 ? s.roundStep : d.roundStep,
       roundDefault: s.roundDefault !== false,
       look: look,
+      tips: tips,
+      wishes: wishes,
       accounts: accounts,
       lastAcc: accounts.some(function (a) { return a.id === s.lastAcc; }) ? s.lastAcc : accounts[0].id,
       setupDone: s.setupDone === true
@@ -440,6 +466,38 @@ const L = (function () {
     return { debt: debt, due: due, days: days, weeks: weeks, perWeek: perWeek };
   }
 
+  // Пауза перед необязательной покупкой: от 3 000 ₽ — 24 часа, от 10 000 ₽ — 72 часа.
+  function pauseHours(a) { return a >= 1000000 ? 72 : a >= 300000 ? 24 : 0; }
+
+  // Показатели «здоровья» бюджета за месяц.
+  function healthStats(months, s, mk) {
+    const c = calcMonth(months, s, mk);
+    let need = 0, want = 0, planNeed = 0;
+    CATS.forEach(function (cat) {
+      if (cat.g === 'need') { need += c.spent[cat.id] || 0; planNeed += c.plan[cat.id] || 0; }
+      else if (cat.g === 'want') want += c.spent[cat.id] || 0;
+    });
+    const base = c.income > 0 ? c.income : c.received;
+    const pct = function (v) { return base > 0 ? v / base * 100 : null; };
+    const saved = c.saveTotal + c.round;
+    let sumNeed = 0, cnt = 0;
+    for (let i = 0; i < 3; i++) {
+      const m = calcMonth(months, s, shiftMonth(mk, -i));
+      let n = 0; CATS.forEach(function (cat) { if (cat.g === 'need') n += m.spent[cat.id] || 0; });
+      if (n > 0) { sumNeed += n; cnt++; }
+    }
+    const avgNeeds = cnt > 0 ? sumNeed / cnt : planNeed;
+    let cushion = 0;
+    allTx(months).forEach(function (x) { if (x.t === 's' && x.c === 'cushion') cushion += x.a; });
+    let creditBuys = 0;
+    c.txs.forEach(function (x) { if (x.t === 'e' && isCredit(x)) creditBuys += x.a; });
+    let cashback = 0;
+    s.accounts.forEach(function (a) { cashback += cashbackMonth(months, a, mk); });
+    return { base: base, needPct: pct(need), wantPct: pct(want), savePct: pct(saved), saved: saved,
+      cushion: cushion, avgNeeds: avgNeeds, cushMonths: avgNeeds > 0 ? cushion / avgNeeds : 0,
+      subs: c.spent.subs || 0, cashback: cashback, debt: creditDebt(months, s), paid: c.paid, creditBuys: creditBuys };
+  }
+
   function totalRound(months) {
     let r = 0;
     allTx(months).forEach(function (x) { if (x.t === 'e') r += x.r || 0; });
@@ -451,7 +509,7 @@ const L = (function () {
     return r;
   }
 
-  return { ACC_COLORS: ACC_COLORS, ACCENTS: ACCENTS, GROUPS: GROUPS, CATS: CATS, catById: catById, defaults: defaults, withDefaults: withDefaults,
+  return { pauseHours: pauseHours, healthStats: healthStats, ACC_COLORS: ACC_COLORS, ACCENTS: ACCENTS, GROUPS: GROUPS, CATS: CATS, catById: catById, defaults: defaults, withDefaults: withDefaults,
     dateStr: dateStr, monthOf: monthOf, shiftMonth: shiftMonth, daysIn: daysIn, parseMoney: parseMoney,
     roundUp: roundUp, allTx: allTx, monthTx: monthTx, accOf: accOf, isCredit: isCredit, accountNet: accountNet,
     accountBalance: accountBalance, accountUsed: accountUsed, cashbackMonth: cashbackMonth,
@@ -460,12 +518,110 @@ const L = (function () {
 })();
 
 
+const TIPS = {
+  asOf: '30.10.2026',
+  facts: [
+    ['Ключевая ставка ЦБ', '14%', 'решение 23.10.2026; следующее заседание 18.12.2026'],
+    ['Инфляция за год', '6,35%', 'сентябрь 2026, Росстат'],
+    ['Ставки по вкладам', '≈ 12,5–12,9%', 'средние максимальные в топ-10 банков на срок до года (ЦБ, 21.10.2026)'],
+    ['Страхование вкладов (АСВ)', '1,4 млн ₽', 'на человека в одном банке, вместе с процентами; ИИС и брокерский счёт не застрахованы'],
+    ['Налог с процентов по вкладам', '0% до 160 000 ₽', 'проценты за 2026 год; изменения с 2027 года пока только законопроект'],
+    ['ИИС-3: налоговый вычет', 'до 52 000 ₽ в год', '13% с взносов до 400 000 ₽; срок владения не меньше 5 лет'],
+    ['Вычет за своё обучение', 'до 19 500 ₽ в год', '13% с расходов до 150 000 ₽, не больше уплаченного НДФЛ'],
+    ['НДФЛ с зарплаты', '13%', 'при доходе до 2,4 млн ₽ в год']
+  ],
+  rules: [
+    'Кредитка нужна только для оплаты покупок. Весь долг гасите до конца льготного периода, а не минимальный платёж.',
+    'Платите сначала себе: переводите накопления в день аванса и в день зарплаты, а не «что останется».',
+    'Подушка раньше инвестиций: сначала один месяц обязательных расходов, потом 3–6 месяцев.',
+    '50/30/20 — ориентир, а не закон. Пока есть долг, «Желания» сокращайте в пользу погашения.',
+    'Необязательную покупку сначала записывайте в список желаний и ждите 24 часа, дорогую — 72 часа.',
+    'Раз в квартал проверяйте подписки и автосписания. Не пользовались 30 дней — отменяйте.',
+    'Кэшбэк — это бонус к покупке, которую вы и так планировали, а не повод её сделать.',
+    'Не вкладывайте туда, где обещают «гарантированный высокий доход» и платят за приглашённых друзей. Лицензию проверяйте на сайте Банка России.',
+    'Никому не называйте коды из SMS и не переводите деньги на «безопасный счёт». Оформите самозапрет на кредиты на Госуслугах.',
+    'Раз в неделю уделяйте бюджету 15 минут: остатки по лимитам, долг, прогресс подушки.'
+  ],
+  mistakes: [
+    'Платить по кредитке минимальный платёж и думать, что льготный период сохранится: проценты начисляются на весь долг.',
+    'Снимать наличные или переводить деньги с кредитки: льготы нет, а комиссия может доходить до 5,9% + 590 ₽.',
+    'Инвестировать без подушки: при срочной трате придётся продавать активы в неудачный момент или брать кредит.',
+    'Покупать ради кэшбэка или баллов, которые сгорают.',
+    'Забывать про подписки и пробные периоды, которые сами становятся платными.',
+    'Верить «гарантированной доходности» от компаний без лицензии ЦБ и переводить деньги по звонку «службы безопасности».',
+    'Не считать мелкие регулярные траты (доставка, кофе, такси): за месяц они складываются в заметную долю «Желаний».'
+  ],
+  topics: [
+    { id: 'budget', title: 'Как делить деньги', intro: 'Правила распределения бюджета: откуда они и как подстроить под небольшой доход.', tips: [
+      { id: 'b1', t: 'Считайте проценты от дохода «на руки»: аванс + зарплата + стипендия. Ориентир 50/30/20 — например, с 10 000 ₽ это 5 000 на нужды, 3 000 на желания и 2 000 на накопления. Если «Нужды» стабильно выше 50%, временно берите 60/30/10, но накопления не опускайте ниже 10%.', how: 'Доли «Нужд», «Желаний» и «Накоплений» в блоке «Мои показатели».', src: 'Э. Уоррен, А. Тьяги, «All Your Worth» (2005); Time, «Why a 60/30/10 Budget Could Be the New 50/30/20»', url: 'https://time.com/6916834/how-to-budget-60-30-10/' },
+      { id: 'b2', t: 'Пока есть долг по кредитке, его погашение входит в «20%», а «Желания» временно снижайте до 15–20%.', how: 'Остаток долга и сумма платежей за месяц на вкладке «Счета».', src: 'Логика правила Уоррен (20% — сбережения и долги); поправка для студента — вывод автора отчёта' },
+      { id: 'b3', t: 'Платите сначала себе: переводите накопления в день поступления денег, аванс и зарплату отдельно. Откладывать не меньше десятой части дохода советует Дж. Клейсон.', how: 'Дата записи «Накопления» совпадает с датой дохода; доля накоплений растёт.', src: 'Дж. Клейсон, «Самый богатый человек в Вавилоне»; портал «Молодёжь Москвы»' },
+      { id: 'b4', t: 'Категории в приложении — это цифровые конверты. Перерасход в одной покрывайте за счёт другой, а не за счёт накоплений.', how: 'Число категорий с перерасходом за месяц на вкладке «Бюджет».', src: 'Метод конвертов; ментальные счета (Р. Талер, «Новая поведенческая экономика»)' }
+    ] },
+    { id: 'cushion', title: 'Подушка безопасности', intro: 'Сколько откладывать на чёрный день и где это хранить.', tips: [
+      { id: 'c1', t: 'Посчитайте обязательные расходы месяца и ставьте ступенчатые цели: 1 месяц, затем 3, затем 6. При нестабильном доходе ориентируйтесь на верхнюю границу. В исследовании Vanguard даже небольшой запас был связан с более высоким финансовым благополучием, а 3–6 месяцев давали дополнительный эффект.', how: '«Месяцев подушки» = накопления в категории «Подушка» / средние «Нужды».', src: 'fincult.info, «Финансовая подушка безопасности»; Vanguard, Emergency savings and financial well-being (2025)', url: 'https://fincult.info/article/finansovaya-podushka-bezopasnosti-chto-eto-takoe-i-zachem-ona-nuzhna/' },
+      { id: 'c2', t: 'Храните подушку отдельно от карты для трат: на накопительном счёте или коротком вкладе с пополнением. Банк должен входить в систему страхования вкладов.', how: 'Подушка лежит на отдельном счёте, банк есть в реестре АСВ.', src: 'fincult.info; АСВ', url: 'https://finuslugi.ru/navigator/nakopit-i-sohranit/stat_agentstvo-po-strakhovaniyu-vkladov-limity-vyplaty-i-chto-zastrakhovano' },
+      { id: 'c3', t: 'Подушка — не инвестиции. Брокерский счёт и ИИС не застрахованы АСВ, поэтому подушку там держать нельзя.', how: 'Подушка не смешана с инвестиционным счётом.', src: 'Обзор системы страхования вкладов (bankiros.ru)' },
+      { id: 'c4', t: 'Копилку округлений направляйте в подушку, пока не набран первый месяц расходов: «невидимые» отчисления работают на самую важную цель.', how: 'Сумма округлений за месяц на вкладке «Счета».', src: 'Вывод автора на основе принципа автоматизации (Талер и Бенарци, Save More Tomorrow)' }
+    ] },
+    { id: 'credit', title: 'Кредитка и долги', intro: 'Как пользоваться льготным периодом и не попасть на проценты.', tips: [
+      { id: 'k1', t: 'Запишите дату конца льготного периода и сумму полного погашения. Платите на 2–3 дня раньше срока: зачисление может задержаться.', how: 'Дни до конца срока и долг на вкладке «Счета».', src: 'fincult.info, «Как выбрать кредитную карту»; Финуслуги', url: 'https://fincult.info/article/vybiraem-kreditnuyu-kartu/' },
+      { id: 'k2', t: 'Не снимайте наличные и не переводите деньги с кредитки: льготный период на эти операции обычно не действует, а комиссия может быть 3–5,9% плюс фиксированная сумма.', how: 'Число таких операций за месяц — ноль.', src: 'fincult.info; Финуслуги, «Кредитная карта с льготным периодом: в чём подвох»', url: 'https://finuslugi.ru/navigator/kredity/stat_kreditnaya-karta-s-lgotnym-periodom-v-chem-podvokh-i-kakie-podvodnye-kamni-nuzhno-znat' },
+      { id: 'k3', t: 'Пока долг не закрыт, новые траты по кредитке не должны превышать платежи по ней. Долг должен снижаться от месяца к месяцу.', how: 'Блок «Кредитка» в «Мои показатели»: платежи и новые покупки за месяц.', src: 'Вывод автора; принцип полного погашения — fincult.info' },
+      { id: 'k4', t: 'Если долгов несколько: «лавина» (сначала самая высокая ставка) дешевле, «снежный ком» (сначала самый маленький долг) лучше держит мотивацию. В исследовании Гал и Макшейн успех больше зависел от числа закрытых долгов, чем от суммы выплат.', how: 'Число открытых долгов и переплата процентов.', src: 'Gal & McShane, «Can Small Victories Help Win the War?», JMR (2012)' },
+      { id: 'k5', t: 'Чтобы не жить в долг, отключите снятие наличных с кредитки в настройках банка, а после погашения подумайте о закрытии карты.', how: 'Использование лимита к концу льготного периода — 0%.', src: 'fincult.info' }
+    ] },
+    { id: 'cashback', title: 'Кэшбэк и бонусы', intro: 'Как получать выгоду и не тратить лишнего.', tips: [
+      { id: 'h1', t: 'Кэшбэк выгоден только на траты, которые вы сделали бы и так. Купить ненужное ради 5% — значит потерять 95%.', how: 'Кэшбэк за месяц в «Мои показатели» против лишних покупок «ради акции».', src: 'fincult.info, «Кешбэк: как получать подарки за счёт банка»', url: 'https://fincult.info/article/keshbek-kak-razvlekatsya-puteshestvovat-i-poluchat-podarki-za-schet-banka/' },
+      { id: 'h2', t: 'Выбирайте категории повышенного кэшбэка по своей статистике: 2–3 самые крупные категории расходов за последние месяцы.', how: 'Совпадение категорий кэшбэка с топ-3 расходов.', src: 'Практика; вывод автора' },
+      { id: 'h3', t: 'Смотрите на месячные лимиты кэшбэка, минимальный оборот и срок сгорания баллов. Если ради условия приходится превышать лимит категории, программа вам не подходит.', how: 'Дошли ли до лимита кэшбэка; сколько баллов сгорело.', src: 'Обзоры условий программ лояльности; условия своей карты' },
+      { id: 'h4', t: 'Не держите несколько карт «на всякий случай»: растёт риск платы за обслуживание и путаницы. Полученный кэшбэк сразу отправляйте в накопления.', how: 'Число карт с платным обслуживанием.', src: 'Вывод автора' }
+    ] },
+    { id: 'psych', title: 'Импульсные покупки', intro: 'Как психология влияет на траты и что с этим делать.', tips: [
+      { id: 'p1', t: 'Правило паузы: необязательную покупку от 3 000 ₽ откладывайте на 24 часа, от 10 000 ₽ — на 72 часа. Сначала она попадает в «Список желаний» ниже.', how: 'Число отказов после паузы и сэкономленная сумма в блоке «Список желаний».', src: 'Популярная эвристика (строгих исследований именно про 24/72 часа не найдено); механизм — Д. Канеман, «Думай медленно… решай быстро»', w: 1 },
+      { id: 'p2', t: '«Боль платежа»: чем прозрачнее оплата, тем меньше хочется тратить. На категории, где часто срываетесь (кафе, доставка), выделите недельную сумму наличными или отдельной дебетовой картой.', how: 'Траты в проблемной категории до и после, остаток недельного «конверта».', src: 'Prelec & Loewenstein (1998); Raghubir & Srivastava (2008); APA, «Credit cards vs cash»', url: 'https://www.apa.org/news/press/releases/2008/09/credit-cash' },
+      { id: 'p3', t: 'Не превращайте «эффект латте» в самобичевание: расчёты Бака завышены. Берите из идеи главное — замечайте частые мелкие траты и считайте их за месяц.', how: 'Сумма мелких покупок (до 500 ₽) и доставки за месяц.', src: 'D. Bach, «The Latte Factor»; критика — Forbes (2017)', url: 'https://summitward.com/learn/latte-factor-recalculated' },
+      { id: 'p4', t: 'Доставку еды выделите в отдельный недельный лимит, а не «Продукты»: так видна реальная цена удобства.', how: 'Число заказов в неделю и средний чек.', src: 'Вывод автора на основе ментальных счетов (Талер)' },
+      { id: 'p5', t: 'Деньги — про поведение, а не про формулы. Оставляйте запас на ошибку и не равняйтесь на чужое потребление.', how: 'Доля «Желаний» относительно плана; свободный остаток в конце месяца.', src: 'М. Хаузел, «Психология денег» (общая идея книги)' }
+    ] },
+    { id: 'subs', title: 'Подписки и регулярные платежи', intro: 'Незаметные списания, которые съедают бюджет.', tips: [
+      { id: 's1', t: 'Раз в квартал выписывайте все автосписания (музыка, видео, облако, связь, приложения) и отменяйте то, чем не пользовались 30 дней. На пробный период ставьте напоминание за 2 дня до автопродления.', how: 'Число подписок и их сумма в «Мои показатели»; дата последнего аудита не старше 90 дней.', src: 'Prelec & Loewenstein (1998); периодичность — практическая рекомендация' },
+      { id: 's2', t: 'Считайте подписки в год: 399 ₽ в месяц — это 4 788 ₽ в год. Годовая цифра лучше показывает реальную цену.', how: 'Годовая стоимость подписок в «Мои показатели».', src: 'Вывод автора (переформулирование по Канеману и Талеру)' },
+      { id: 's3', t: 'Обязательные платежи (связь, проезд, жильё) закрывайте автоплатежом сразу после зарплаты, чтобы они не конкурировали с «Желаниями».', how: 'Все постоянные «Нужды» стоят на автоплатеже.', src: 'Принцип автоматизации (Thaler & Benartzi, 2004)' }
+    ] },
+    { id: 'invest', title: 'Накопления и инвестиции', intro: 'С чего начать новичку. Это общие принципы, а не личная рекомендация.', tips: [
+      { id: 'i1', t: 'Перед инвестициями проверьте три условия: долг по кредитке равен нулю, подушка не меньше 3 месяцев, у цели есть срок. Инвестируйте только деньги, которые не понадобятся минимум 3–5 лет.', how: 'Блок «План по порядку»: шаги 1–3 выполнены.', src: 'fincult.info; Б. Грэм, «Разумный инвестор» (общая идея)' },
+      { id: 'i2', t: 'Вклад или накопительный счёт: держите не больше 1,4 млн ₽ в одном банке вместе с процентами. Проценты по вкладам за 2026 год не облагаются НДФЛ в пределах 160 000 ₽.', how: 'Остаток в каждом банке и проценты за год.', src: 'АСВ; Коммерсантъ, Клерк', url: 'https://finuslugi.ru/navigator/nakopit-i-sohranit/stat_agentstvo-po-strakhovaniyu-vkladov-limity-vyplaty-i-chto-zastrakhovano' },
+      { id: 'i3', t: 'ИИС-3 даёт вычет 13% с взносов до 400 000 ₽ в год (если вы платите НДФЛ). Счёт, открытый в 2024–2026 годах, нужно держать минимум 5 лет. Деньги на ИИС не застрахованы АСВ.', how: 'Взносы за год × 13% = ожидаемый вычет; дата, когда счёт можно закрыть без потери льгот.', src: 'Финуслуги, «ИИС-3 в 2026 году»', url: 'https://finuslugi.ru/navigator/investirovat/stat_iis_3_vychety_i_strakhovanie_na_14_mln_r' },
+      { id: 'i4', t: 'Диверсифицируйте: не держите всё в одной бумаге или секторе, выбирайте простые понятные инструменты. У акций и облигаций нет гарантии АСВ, и они могут упасть в цене.', how: 'Доля самой крупной позиции (сигнал, если больше 20–25%).', src: 'Б. Грэм, «Разумный инвестор» (общая идея); базовый принцип диверсификации' },
+      { id: 'i5', t: 'Признаки пирамиды: «гарантированная» высокая доходность, бонусы за приведённых друзей, агрессивная реклама, нет лицензии ЦБ. Брокера и банк проверяйте в Справочнике финансовых организаций на cbr.ru.', how: 'У каждого банка и брокера отмечено «лицензия проверена».', src: 'Банк России, «Признаки финансовой пирамиды»', url: 'https://www.cbr.ru/faq/pnp/' }
+    ] },
+    { id: 'fraud', title: 'Защита от мошенников', intro: 'Самые частые схемы и простые меры защиты.', tips: [
+      { id: 'f1', t: 'Оформите самозапрет на кредиты и займы на Госуслугах (действует с 1 марта 2025 года). Быстро снять его нельзя: после заявки действует «период охлаждения».', how: 'Статус «самозапрет установлен».', src: 'Банк России; ОКБ', url: 'https://ulus.media/2026/09/11/samozapret-na-kredity-v-2026-godu-chto-nuzhno-znat-kazhdomu/' },
+      { id: 'f2', t: 'Банк и ЦБ никогда не просят назвать код из SMS, перевести деньги на «безопасный счёт» или оформить кредит. Кладите трубку и перезванивайте по номеру с обратной стороны карты.', how: 'Вы знаете эти правила и рассказали их близким.', src: 'Банк России' },
+      { id: 'f3', t: 'Поставьте суточные лимиты на переводы и снятие наличных в банковских приложениях. Для карты с крупным остатком отключите онлайн-платежи.', how: 'Лимиты установлены на каждой карте.', src: 'Рекомендации банков и Банка России' },
+      { id: 'f4', t: 'Паузы банка — защита, а не помеха: подозрительные переводы могут приостановить, а крупный кредит выдать с задержкой. Если собеседник просит «обойти» паузу или торопит, это почти наверняка мошенник.', how: 'Срочность и секретность — красные флаги.', src: 'Банк России; обзоры мер против мошенников', url: 'https://brobank.ru/podvodnyt-kamni-samozapreta/' }
+    ] },
+    { id: 'habits', title: 'Привычки и самоконтроль', intro: 'Как сделать так, чтобы правила работали без силы воли.', tips: [
+      { id: 'a1', t: 'Автоматизируйте: в дни аванса и зарплаты — автоперевод на накопления, при росте дохода сразу добавляйте 1–2 процентных пункта к доле накоплений. В программе Save More Tomorrow норма сбережений участников выросла с 3,5% до 13,6% за 40 месяцев.', how: 'Автоперевод настроен; доля накоплений по месяцам растёт.', src: 'Thaler & Benartzi, JPE (2004); Талер, Санстейн, «Nudge». Оговорка: причинная доказательность оценена как низкая (CLEAR, Минтруд США)', url: 'https://clear.dol.gov/study/save-more-tomorrow%E2%84%A2-using-behavioral-economics-increase-employee-saving-thaler-benartzi-2004' },
+      { id: 'a2', t: 'Раз в неделю в фиксированный день — 15 минут на бюджет: остатки по лимитам, долг по кредитке, прогресс подушки, одно решение на неделю. Раз в месяц сверяйте остатки в приложении с реальными на картах и наличными.', how: 'Четыре обзора в месяц; расхождение с реальными остатками меньше 1% дохода.', src: 'Практика бюджетирования' },
+      { id: 'a3', t: 'Формулируйте цели цифрами и датой: не «накопить», а «90 000 ₽ к 1 июня», то есть 15 000 ₽ в месяц на 6 месяцев.', how: 'Процент выполнения цели и нужный ежемесячный взнос.', src: 'fincult.info; портал Минфина МОИФИНАНСЫ.РФ', url: 'https://xn--80apaohbc3aw9e.xn--p1ai/article/kak-rasschitat-finansovuyu-podushku-bezopasnosti-v-2023-godu/' }
+    ] },
+    { id: 'tax', title: 'Налоги и права работающего студента', intro: 'Только проверенное. Перед действиями сверяйтесь с официальными источниками.', tips: [
+      { id: 't1', t: 'С зарплаты удерживается НДФЛ 13% (при доходе до 2,4 млн ₽ в год). Стипендия студентов вузов, которую платит сама образовательная организация, НДФЛ не облагается; стипендия по ученическому договору с работодателем облагается.', how: 'Отдельно считайте «зарплата после НДФЛ» и «стипендия».', src: 'НК РФ, ст. 217, п. 11', url: 'https://rulaws.ru/nk-rf-chast-2/Razdel-VIII/Glava-23/Statya-217/' },
+      { id: 't2', t: 'Если вы платите за своё обучение, можно вернуть 13% с расходов до 150 000 ₽ в год, то есть до 19 500 ₽ (но не больше уплаченного НДФЛ). Вычет можно заявить за три последних года.', how: 'Оплата обучения за год, удержанный НДФЛ, ожидаемый вычет.', src: 'НК РФ, ст. 219; портал Минфина МОИФИНАНСЫ.РФ', url: 'https://podpisal.ru/articles/nalogovyj-vychet-za-obuchenie/' },
+      { id: 't3', t: 'Оплачиваемый учебный отпуск по ст. 173 ТК РФ положен студентам заочной и очно-заочной формы на аккредитованных программах, если образование этого уровня получаете впервые. Для очной формы в основном предусмотрен отпуск без сохранения зарплаты. Условия уточняйте в кадрах.', how: 'Напоминание подать заявление по справке-вызову перед сессией.', src: 'ТК РФ, ст. 173, 177', url: 'https://www.consultant.ru/document/cons_doc_LAW_34683/a800c77a49cbb63c2ffcc584f5ae59d636509597/', w: 1 },
+      { id: 't4', t: 'Следите за законопроектами: поправки о налоге на проценты по вкладам с 2027 года пока приняты только в первом чтении и не являются законом.', how: 'Проверить изменения в январе 2027 года.', src: 'Известия, 30.10.2026', url: 'https://iz.ru/2193322/2026-10-30/gosduma-odobrila-rasshirenie-progressivnoi-shkaly-ndfl-na-dokhody-po-vkladam' }
+    ] }
+  ]
+};
+
 (function () {
   'use strict';
   const $ = function (s) { return document.querySelector(s); };
   const app = $('#app'), sheet = $('#sheet'), toastEl = $('#toast');
   let state = { settings: L.withDefaults(null), months: {} };
-  let ui = { tab: 'home', month: L.monthOf(L.dateStr(new Date())), edit: false, creditEdit: false, sel: null, del: null, accEdit: null, accDel: null };
+  let ui = { tipTopic: null, tipOpen: null, tab: 'home', month: L.monthOf(L.dateStr(new Date())), edit: false, creditEdit: false, sel: null, del: null, accEdit: null, accDel: null };
   let ready = false, mode = 'memory', persistOk = true, sh = null, pendingRender = false, toastT = null;
 
   /* ---------- форматирование ---------- */
@@ -685,6 +841,10 @@ const L = (function () {
     });
     if (alerts.length) h += '<section class="card"><h2>Обратите внимание</h2><div class="alerts">' + alerts.join('') + '</div></section>';
 
+    // совет дня
+    const rules = TIPS.rules, rule = rules[Math.floor(Date.now() / 86400000) % rules.length];
+    h += '<section class="card"><div class="grouphead"><h2>Совет дня</h2><button class="link small" data-a="go:tips">Школа финансов</button></div><div>' + esc(rule) + '</div></section>';
+
     // последние записи
     h += '<section class="card"><div class="grouphead"><h2>Последние записи</h2><button class="link small" data-a="go:history">Вся история</button></div>';
     if (!c.txs.length) h += '<div class="empty">В этом месяце записей пока нет.<br>Нажмите «+», чтобы добавить первую трату.</div>';
@@ -726,6 +886,7 @@ const L = (function () {
   function viewBudget() {
     const s = state.settings, mk = ui.month, c = L.calcMonth(state.months, s, mk);
     let h = monthBar(mk);
+    h += '<button class="card" data-a="go:tips" style="text-align:left"><span class="label">Школа финансов</span><span>Советы, показатели бюджета и список желаний</span></button>';
     h += '<section class="card"><div class="grouphead"><h2>Доход и лимиты</h2><button class="link small" data-a="edit">' + (ui.edit ? 'Готово' : 'Настроить') + '</button></div>';
     h += '<div class="formrow"><span>Доход в месяц</span><b class="num">' + fmt(c.income) + '</b></div>';
     if (c.reserve > 0) h += '<div class="formrow"><span>Отложено на кредитку</span><b class="num">−' + fmt(c.reserve, true) + '</b></div>';
@@ -845,6 +1006,135 @@ const L = (function () {
     return h;
   }
 
+
+  /* ---------- школа финансов ---------- */
+  function tipsHead(title, back) {
+    return '<div class="mswitch"><button class="iconbtn" data-a="' + back + '" aria-label="Назад">' + ico.left + '</button><h1>' + esc(title) + '</h1><span style="width:44px"></span></div>';
+  }
+  function pillHtml(k, t) { return '<span class="pill ' + k + '">' + t + '</span>'; }
+  function pc(v) { return v == null ? '—' : Math.round(v) + '%'; }
+  function viewTips() {
+    const s = state.settings;
+    if (ui.tipTopic) {
+      const tp = TIPS.topics.filter(function (x) { return x.id === ui.tipTopic; })[0];
+      if (tp) return viewTopic(tp);
+    }
+    const today = L.dateStr(new Date()), mk = L.monthOf(today), hs = L.healthStats(state.months, s, mk);
+    let h = tipsHead('Школа финансов', 'go:home');
+
+    // показатели
+    h += '<section class="card"><h2>Мои показатели</h2><div class="small muted">За ' + esc(monthTitle(mk).toLowerCase()) + '</div>';
+    if (!(hs.base > 0)) h += '<div class="hint">Задайте доход (Бюджет → Настроить), чтобы видеть доли.</div>';
+    else {
+      const nk = hs.needPct <= 50 ? 'good' : hs.needPct <= 60 ? 'warn' : 'bad';
+      const wk = hs.wantPct <= 30 ? 'good' : hs.wantPct <= 40 ? 'warn' : 'bad';
+      const sk = hs.savePct >= 10 ? 'good' : hs.savePct >= 5 ? 'warn' : 'bad';
+      h += '<div class="formrow"><span>Нужды <span class="small muted">до 50%</span></span><span class="num"><b>' + pc(hs.needPct) + '</b> ' + pillHtml(nk, nk === 'good' ? 'в норме' : nk === 'warn' ? 'много' : 'слишком много') + '</span></div>';
+      h += '<div class="formrow"><span>Желания <span class="small muted">до 30%</span></span><span class="num"><b>' + pc(hs.wantPct) + '</b> ' + pillHtml(wk, wk === 'good' ? 'в норме' : wk === 'warn' ? 'много' : 'слишком много') + '</span></div>';
+      h += '<div class="formrow"><span>Накопления <span class="small muted">от 10%</span></span><span class="num"><b>' + pc(hs.savePct) + '</b> ' + pillHtml(sk, sk === 'good' ? 'в норме' : sk === 'warn' ? 'мало' : 'очень мало') + '</span></div>';
+    }
+    const ck = hs.cushMonths >= 3 ? 'good' : hs.cushMonths >= 1 ? 'warn' : 'idle';
+    h += '<div class="formrow"><span>Подушка <span class="small muted">цель 3–6 мес.</span></span><span class="num"><b>' + (Math.round(hs.cushMonths * 10) / 10).toString().replace('.', ',') + ' мес.</b> ' + pillHtml(ck, ck === 'good' ? 'есть' : ck === 'warn' ? 'в процессе' : 'нет') + '</span></div>';
+    if (hs.debt > 0 || hs.paid > 0 || hs.creditBuys > 0) {
+      const dk = hs.creditBuys > hs.paid ? 'bad' : 'good';
+      h += '<div class="formrow"><span>Кредитка: платежи и покупки</span><span class="num"><b>' + fmt(hs.paid) + ' / ' + fmt(hs.creditBuys) + '</b> ' + pillHtml(dk, dk === 'good' ? 'долг снижается' : 'долг растёт') + '</span></div>';
+    }
+    h += '<div class="formrow"><span>Подписки в месяц</span><span class="num"><b>' + fmt(hs.subs) + '</b> <span class="small muted">' + fmt(hs.subs * 12) + ' в год</span></span></div>';
+    h += '<div class="formrow"><span>Кэшбэк за месяц</span><b class="num">' + fmt(hs.cashback, true) + '</b></div>';
+    h += '</section>';
+
+    // план по порядку
+    const steps = [
+      ['Закрыть кредитку', hs.debt <= 0, hs.debt > 0 ? 'Осталось ' + fmt(hs.debt, true) : 'Долга нет'],
+      ['Подушка на 1 месяц расходов', hs.cushMonths >= 1, 'Сейчас ' + (Math.round(hs.cushMonths * 10) / 10).toString().replace('.', ',') + ' мес.'],
+      ['Подушка на 3 месяца', hs.cushMonths >= 3, 'Потом можно до 6 месяцев'],
+      ['Откладывать от 10% дохода', hs.savePct != null && hs.savePct >= 10, 'Сейчас ' + pc(hs.savePct)],
+      ['Инвестиции из свободных денег', false, '']
+    ];
+    const first = steps.findIndex(function (x, i) { return i < 4 && !x[1]; });
+    steps[4][1] = first === -1;
+    steps[4][2] = first === -1 ? 'Можно начинать с малого, читайте тему «Накопления и инвестиции»' : 'Пока рано: сначала шаги 1–3';
+    h += '<section class="card"><h2>План по порядку</h2><div class="list">';
+    steps.forEach(function (x, i) {
+      const cls = x[1] ? 'done' : (i === first ? 'now' : '');
+      h += '<div class="row"><span class="stepno ' + cls + '">' + (x[1] ? '✓' : (i + 1)) + '</span><span class="main"><span class="t">' + esc(x[0]) + '</span><span class="small muted">' + esc(x[2]) + '</span></span>' + (i === first ? pillHtml('warn', 'сейчас') : '') + '</div>';
+    });
+    h += '</div></section>';
+
+    // список желаний
+    h += wishCard();
+
+    // золотые правила
+    h += '<section class="card"><h2>Золотые правила</h2><ol class="ol">';
+    TIPS.rules.forEach(function (r) { h += '<li>' + esc(r) + '</li>'; });
+    h += '</ol></section>';
+
+    // темы
+    h += '<section class="card"><h2>Темы</h2><div class="list">';
+    TIPS.topics.forEach(function (tp) {
+      const done = tp.tips.filter(function (x) { return s.tips[x.id]; }).length;
+      h += '<button class="row" data-a="topic" data-id="' + tp.id + '"><span class="main"><span class="t">' + esc(tp.title) + '</span><span class="small muted">' + esc(tp.intro) + '</span></span><span class="progress num">' + done + ' из ' + tp.tips.length + '</span></button>';
+    });
+    h += '</div><div class="small muted">Отмечайте советы, которые уже применяете.</div></section>';
+
+    h += '<section class="card"><h2>Типичные ошибки</h2><ol class="ol">';
+    TIPS.mistakes.forEach(function (r) { h += '<li>' + esc(r) + '</li>'; });
+    h += '</ol></section>';
+
+    h += '<section class="card"><h2>Цифры на ' + TIPS.asOf + '</h2>';
+    TIPS.facts.forEach(function (f) { h += '<div class="formrow" style="align-items:flex-start"><span>' + esc(f[0]) + '<br><span class="small muted">' + esc(f[2]) + '</span></span><b class="num" style="text-align:right">' + esc(f[1]) + '</b></div>'; });
+    h += '<div class="hint warn">Ставки, лимиты и законы меняются. Перед действиями сверяйтесь с cbr.ru, fincult.info и nalog.gov.ru.</div></section>';
+
+    h += '<div class="small muted" style="padding:0 4px">Материалы собраны из открытых источников: Банк России (fincult.info), АСВ, Минфин, книги и исследования по поведенческой экономике. Это общие образовательные принципы, а не индивидуальная инвестиционная рекомендация.</div>';
+    return h;
+  }
+
+  function viewTopic(tp) {
+    const s = state.settings;
+    const done = tp.tips.filter(function (x) { return s.tips[x.id]; }).length;
+    let h = tipsHead(tp.title, 'topic');
+    h += '<section class="card"><div class="grouphead"><span class="small muted">' + esc(tp.intro) + '</span><span class="progress num">' + done + ' из ' + tp.tips.length + '</span></div>';
+    tp.tips.forEach(function (x) {
+      const open = ui.tipOpen === x.id, on = !!s.tips[x.id];
+      h += '<div class="tip"><div class="tiphead"><button class="ck' + (on ? ' on' : '') + '" role="checkbox" aria-checked="' + (on ? 'true' : 'false') + '" aria-label="Применяю" data-a="tipck" data-id="' + x.id + '">' + (on ? '✓' : '') + '</button>' +
+        '<button class="tt" data-a="tipopen" data-id="' + x.id + '" style="text-align:left">' + esc(x.t) + (x.w ? ' ' + pillHtml('warn', 'спорно') : '') + '</button></div>';
+      if (open) {
+        h += '<div class="tipbody"><div class="how"><b>Как проверять:</b> ' + esc(x.how) + '</div><div class="src">Источник: ' + esc(x.src) + '</div>';
+        if (x.url) h += '<a class="link small" href="' + esc(x.url) + '" target="_blank" rel="noopener noreferrer">Открыть источник</a>';
+        h += '</div>';
+      }
+      h += '</div>';
+    });
+    h += '</section>';
+    if (tp.tips.some(function (x) { return x.w; })) h += '<div class="small muted" style="padding:0 4px">Пометка «спорно»: для этого совета нет надёжного подтверждения в исследованиях или условия зависят от ситуации.</div>';
+    return h;
+  }
+
+  function wishCard() {
+    const s = state.settings, now = Date.now();
+    const active = s.wishes.filter(function (w) { return w.st === 'w'; });
+    const dropped = s.wishes.filter(function (w) { return w.st === 'c'; });
+    let saved = 0; dropped.forEach(function (w) { saved += w.a; });
+    let h = '<section class="card"><h2>Список желаний</h2><div class="small muted">Хочется купить не по плану? Запишите здесь и подождите: от 3 000 ₽ — 24 часа, от 10 000 ₽ — 72 часа.</div>';
+    h += '<div class="wishform"><input id="wName" class="inp" maxlength="60" placeholder="Что хочется купить" aria-label="Название"><input id="wAmt" class="inp num" inputmode="decimal" placeholder="Цена" aria-label="Цена"></div>';
+    h += '<button class="btn primary block" data-a="wishadd">Добавить в список</button>';
+    if (active.length) {
+      h += '<div class="list">';
+      active.forEach(function (w) {
+        const hrs = L.pauseHours(w.a), left = w.ts + hrs * 3600000 - now, ready = left <= 0;
+        let st;
+        if (hrs === 0) st = 'Пауза не нужна';
+        else if (ready) st = 'Пауза прошла, решайте';
+        else { const hl = Math.ceil(left / 3600000); st = 'Подождите ещё ' + hl + ' ч'; }
+        h += '<div class="row" style="cursor:default"><span class="main"><span class="t">' + esc(w.name || 'Без названия') + '</span><span class="small muted num">' + fmt(w.a, w.a % 100 !== 0) + ' · ' + st + '</span></span></div>';
+        h += '<div class="actions">' + (ready ? '<button class="btn primary sm" data-a="wishbuy" data-id="' + esc(w.id) + '">Куплю</button>' : '') + '<button class="btn ghost sm" data-a="wishdrop" data-id="' + esc(w.id) + '">Передумал</button></div>';
+      });
+      h += '</div>';
+    }
+    if (dropped.length) h += '<div class="hint good num">Отказались от ' + dropped.length + ' ' + plural(dropped.length, ['покупки', 'покупок', 'покупок']) + ', сэкономили ' + fmt(saved, saved % 100 !== 0) + '</div>';
+    return h + '</section>';
+  }
+
   /* ---------- оформление ---------- */
   const WKEY = 'balans-wallpaper';
   let wallData = null;
@@ -904,7 +1194,7 @@ const L = (function () {
     applyLook();
     let h;
     if (ui.tab === 'home') h = viewHome(); else if (ui.tab === 'history') h = viewHistory();
-    else if (ui.tab === 'budget') h = viewBudget(); else h = viewAccounts();
+    else if (ui.tab === 'budget') h = viewBudget(); else if (ui.tab === 'tips') h = viewTips(); else h = viewAccounts();
     app.innerHTML = h;
     document.querySelectorAll('#nav [data-tab]').forEach(function (b) {
       const on = b.getAttribute('data-tab') === ui.tab;
@@ -1077,7 +1367,7 @@ const L = (function () {
     const t = e.target.closest('[data-a]'); if (!t) return;
     const a = t.getAttribute('data-a'), id = t.getAttribute('data-id'), s = state.settings;
     if (a === 'm-' || a === 'm+') { ui.month = L.shiftMonth(ui.month, a === 'm-' ? -1 : 1); ui.sel = ui.del = null; render(); }
-    else if (a.indexOf('go:') === 0) { ui.tab = a.slice(3); ui.sel = ui.del = null; render(); window.scrollTo(0, 0); }
+    else if (a.indexOf('go:') === 0) { ui.tab = a.slice(3); ui.tipTopic = null; ui.sel = ui.del = null; render(); window.scrollTo(0, 0); }
     else if (a === 'sel') { ui.sel = ui.sel === id ? null : id; ui.del = null; render(); }
     else if (a === 'del') { ui.del = id; render(); }
     else if (a === 'delno') { ui.del = null; render(); }
@@ -1098,6 +1388,27 @@ const L = (function () {
     else if (a.indexOf('lookmode:') === 0) { s.look.mode = a.slice(9); Store.saveSettings(); render(); }
     else if (a.indexOf('lookacc:') === 0) { s.look.accent = a.slice(8); Store.saveSettings(); render(); }
     else if (a === 'wallclear') { try { localStorage.removeItem(WKEY); } catch (er) { /* ничего */ } wallData = null; render(); toast('Обои убраны.'); }
+    else if (a === 'topic') { ui.tipTopic = id || null; ui.tipOpen = null; render(); window.scrollTo(0, 0); }
+    else if (a === 'tipopen') { ui.tipOpen = ui.tipOpen === id ? null : id; render(); }
+    else if (a === 'tipck') { if (s.tips[id]) delete s.tips[id]; else s.tips[id] = true; Store.saveSettings(); render(); }
+    else if (a === 'wishadd') {
+      const name = $('#wName').value.trim(), amt = L.parseMoney($('#wAmt').value);
+      if (!name || isNaN(amt) || amt <= 0) { toast('Введите название и цену, например 3500.'); return; }
+      s.wishes.push({ id: Date.now().toString(36) + Math.random().toString(36).slice(2, 5), ts: Date.now(), name: name, a: amt, st: 'w' });
+      if (s.wishes.length > 200) s.wishes = s.wishes.slice(-200);
+      Store.saveSettings(); render(); toast(L.pauseHours(amt) ? 'Записано. Вернитесь через ' + L.pauseHours(amt) + ' ч.' : 'Записано.');
+    }
+    else if (a === 'wishdrop') {
+      const w = s.wishes.filter(function (x) { return x.id === id; })[0];
+      if (w) { w.st = 'c'; Store.saveSettings(); render(); toast('Отлично! Сэкономлено ' + fmt(w.a, w.a % 100 !== 0)); }
+    }
+    else if (a === 'wishbuy') {
+      const w = s.wishes.filter(function (x) { return x.id === id; })[0];
+      if (w) {
+        w.st = 'b'; Store.saveSettings(); render(); openSheet();
+        if (sh) { $('#shAmount').value = (w.a / 100).toFixed(2).replace('.', ','); $('#shNote').value = w.name; updatePreview(); }
+      }
+    }
     else if (a === 'accround') { const ac = accById(id); if (ac) { ac.round = !ac.round; Store.saveSettings(); render(); } }
     else if (a === 'accdel') { ui.accDel = id; render(); }
     else if (a === 'accdelno') { ui.accDel = null; render(); }
