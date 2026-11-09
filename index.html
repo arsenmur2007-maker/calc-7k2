@@ -227,7 +227,14 @@ input[type=range]{width:100%; accent-color:var(--accent)}
 .ol{margin:0; padding-left:20px; display:flex; flex-direction:column; gap:8px}
 a.link{text-decoration:underline; text-underline-offset:2px}
 
-</style></head><body>
+/* Telegram WebView safe areas; ordinary browser layout remains unchanged. */
+html.tg-mini #app { padding-top: max(0px, var(--tg-content-safe-area-inset-top, 0px)); }
+html.tg-mini #nav { padding-bottom: max(0px, var(--tg-safe-area-inset-bottom, 0px)); }
+html.tg-mini #sheet { padding-bottom: max(12px, var(--tg-safe-area-inset-bottom, 0px)); }
+</style>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<script src="telegram-adapter.js" defer></script>
+</head><body>
 <main id="app"></main>
 <nav id="nav" aria-label="Разделы"><div class="in">
 <button data-tab="home"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 11l9-8 9 8v9a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/></svg><span>Главная</span></button>
@@ -287,6 +294,21 @@ const L = (function () {
       setupDone: false
     };
   }
+  // Only known keys may enter financial settings from a backup or local storage.
+  function safeFields(base, source) {
+    const out = Object.assign({}, base);
+    if (!source || typeof source !== 'object' || Array.isArray(source)) return out;
+    Object.keys(base).forEach(function (key) {
+      if (!Object.prototype.hasOwnProperty.call(source, key)) return;
+      const value = source[key];
+      if (typeof base[key] === 'number') {
+        if (typeof value === 'number' && Number.isFinite(value) && Math.abs(value) <= 1e12) out[key] = value;
+      } else if (typeof base[key] === 'string') {
+        if (typeof value === 'string') out[key] = value.slice(0, 100);
+      } else if (typeof base[key] === 'boolean' && typeof value === 'boolean') out[key] = value;
+    });
+    return out;
+  }
   function withDefaults(s) {
     const d = defaults();
     s = s || {};
@@ -313,9 +335,9 @@ const L = (function () {
       return { id: String(w.id), ts: Number(w.ts) || 0, name: String(w.name || '').slice(0, 60), a: Number(w.a) || 0, st: ['w', 'b', 'c'].indexOf(w.st) >= 0 ? w.st : 'w' };
     }) : [];
     return {
-      income: Object.assign(d.income, s.income || {}),
-      pct: Object.assign(d.pct, s.pct || {}),
-      credit: Object.assign(d.credit, s.credit || {}),
+      income: safeFields(d.income, s.income),
+      pct: safeFields(d.pct, s.pct),
+      credit: safeFields(d.credit, s.credit),
       roundStep: s.roundStep > 0 ? s.roundStep : d.roundStep,
       roundDefault: s.roundDefault !== false,
       look: look,
@@ -341,8 +363,7 @@ const L = (function () {
     if (s == null) return NaN;
     const t = String(s).replace(/[\s ]/g, '').replace(',', '.');
     if (!/^\d+(\.\d{1,2})?$/.test(t)) return NaN;
-    const amount = Math.round(parseFloat(t) * 100);
-    return Number.isSafeInteger(amount) ? amount : NaN;
+    return Math.round(parseFloat(t) * 100);
   }
   function roundUp(a, step) {
     if (!step || step <= 0) return 0;
@@ -362,6 +383,7 @@ const L = (function () {
     const t = (months[mk] && months[mk].tx) || {};
     return Object.keys(t).map(function (k) { return t[k]; }).sort(function (a, b) {
       if (a.d !== b.d) return a.d < b.d ? 1 : -1;
+      if ((a.time || '') !== (b.time || '')) return (a.time || '') < (b.time || '') ? 1 : -1;
       return b.ts - a.ts;
     });
   }
@@ -381,7 +403,6 @@ const L = (function () {
       if (x.t === 'e') { if (a === id) n -= x.a + (x.r || 0); }
       else if (x.t === 'i') { if (a === id) n += x.a; }
       else if (x.t === 'p' || x.t === 's') { if (a === id) n -= x.a; }
-      else if (x.t === 'w') { if (a === id) n += x.a; }
       else if (x.t === 't') { if (a === id) n -= x.a; if (x.to === id) n += x.a; }
     });
     return n;
@@ -390,45 +411,11 @@ const L = (function () {
   function accountUsed(months, id) {
     return allTx(months).some(function (x) { return accOf(x) === id || x.to === id; });
   }
-  // Единое правило округления кэшбэка для превью и месячной статистики:
-  // считаем по каждой покупке отдельно, как это показывает форма операции.
-  function cashbackForAmount(amount, rate) {
-    if (!Number.isSafeInteger(amount) || amount <= 0 || !Number.isFinite(rate) || rate <= 0) return 0;
-    return Math.floor(amount * rate / 100);
-  }
   function cashbackMonth(months, acc, mk) {
     if (!acc.cashback) return 0;
     let sum = 0;
-    monthTx(months, mk).forEach(function (x) {
-      if (x.t === 'e' && accOf(x) === acc.id) sum += cashbackForAmount(x.a, acc.cashback);
-    });
-    return sum;
-  }
-
-  // Сбережения состоят из округлений и явных пополнений за вычетом снятий.
-  // Перевод между обычными счетами (t) нейтрален: он не создаёт и не уничтожает сбережения.
-  function savingsEvents(months) {
-    const events = [];
-    allTx(months).forEach(function (x) {
-      if (x.t === 'e' && x.r > 0) events.push({ d: x.d, ts: x.ts || 0, delta: x.r });
-      else if (x.t === 's') events.push({ d: x.d, ts: x.ts || 0, delta: x.a });
-      else if (x.t === 'w') events.push({ d: x.d, ts: x.ts || 0, delta: -x.a });
-    });
-    events.sort(function (a, b) { if (a.d !== b.d) return a.d < b.d ? -1 : 1; if ((a.delta >= 0) !== (b.delta >= 0)) return a.delta >= 0 ? -1 : 1; return a.ts - b.ts; });
-    return events;
-  }
-  function savingsBalance(months) {
-    return savingsEvents(months).reduce(function (sum, x) { return sum + x.delta; }, 0);
-  }
-  function savingsBalanceAt(months, date) {
-    if (!date) return savingsBalance(months);
-    let sum = 0;
-    savingsEvents(months).forEach(function (x) { if (x.d <= date) sum += x.delta; });
-    return sum;
-  }
-  function savingsLedgerValid(months) {
-    const balance = savingsBalance(months);
-    return Number.isSafeInteger(balance) && balance >= 0;
+    monthTx(months, mk).forEach(function (x) { if (x.t === 'e' && accOf(x) === acc.id) sum += x.a; });
+    return Math.floor(sum * acc.cashback / 100);
   }
 
   function creditDebt(months, s) {
@@ -456,26 +443,17 @@ const L = (function () {
       } else if (x.t === 's') {
         saved[x.c] = (saved[x.c] || 0) + x.a;
         saveTotal += x.a;
-      } else if (x.t === 'w') {
-        saved[x.c] = (saved[x.c] || 0) - x.a;
-        saveTotal -= x.a;
       } else if (x.t === 'i') {
         if (x.reg) received += x.a; else oneOff += x.a;
       } else if (x.t === 'p') {
         if (x.ts > s.credit.setAt) paid += x.a;
       }
     });
-    const plannedIncome = s.income.salary + s.income.stipend + s.income.extra;
-    // Регулярные поступления подтверждают план, но не прибавляются к нему второй раз.
-    // Если фактический регулярный доход выше плана, учитываем фактическую сумму.
-    // Разовые поступления всегда увеличивают бюджет отдельно.
-    const regularIncome = Math.max(plannedIncome, received);
-    const income = regularIncome + oneOff;
-    let reserve = 0, savingsCover = 0;
+    const income = s.income.salary + s.income.stipend + s.income.extra + oneOff;
+    let reserve = 0;
     if (s.credit.due && s.credit.due.slice(0, 7) === mk) {
       const start = creditDebt(months, s) + paid - creditBuys;
-      savingsCover = Math.min(Math.max(0, s.credit.fromSavings || 0), Math.max(0, savingsBalance(months)), Math.max(0, start));
-      reserve = Math.max(0, start - savingsCover);
+      reserve = Math.max(0, start - Math.min(Math.max(0, s.credit.fromSavings || 0), Math.max(0, totalSaved(months) + totalRound(months))));
     }
     const available = Math.max(0, income - reserve);
     const plan = {};
@@ -486,8 +464,7 @@ const L = (function () {
       if (c.g === 'save') savePlan += p; else spendPlan += p;
     });
     return { txs: txs, spent: spent, saved: saved, spentTotal: spentTotal, saveTotal: saveTotal, round: round,
-      oneOff: oneOff, received: received, plannedIncome: plannedIncome, paid: paid, income: income,
-      savingsCover: savingsCover, reserve: reserve, available: available, plan: plan,
+      oneOff: oneOff, received: received, paid: paid, income: income, reserve: reserve, available: available, plan: plan,
       spendPlan: spendPlan, savePlan: savePlan };
   }
 
@@ -523,7 +500,7 @@ const L = (function () {
       if (cat.g === 'need') { need += c.spent[cat.id] || 0; planNeed += c.plan[cat.id] || 0; }
       else if (cat.g === 'want') want += c.spent[cat.id] || 0;
     });
-    const base = c.income;
+    const base = c.income > 0 ? c.income : c.received;
     const pct = function (v) { return base > 0 ? v / base * 100 : null; };
     const saved = c.saveTotal + c.round;
     let sumNeed = 0, cnt = 0;
@@ -535,7 +512,6 @@ const L = (function () {
     const avgNeeds = cnt > 0 ? sumNeed / cnt : planNeed;
     let cushion = 0;
     allTx(months).forEach(function (x) { if (x.t === 's' && x.c === 'cushion') cushion += x.a; else if (x.t === 'w' && x.c === 'cushion') cushion -= x.a; });
-    cushion = Math.max(0, cushion);
     let creditBuys = 0;
     c.txs.forEach(function (x) { if (x.t === 'e' && isCredit(x)) creditBuys += x.a; });
     let cashback = 0;
@@ -550,113 +526,19 @@ const L = (function () {
     allTx(months).forEach(function (x) { if (x.t === 'e') r += x.r || 0; });
     return r;
   }
-  function totalSaved(months) { return Math.max(0, savingsBalance(months)); }
-
-  // Проверка резервной копии целиком до изменения текущего состояния.
-  // Валидируем и нормализуем данные в новые объекты: ошибка не должна менять текущее состояние.
-  function validateBackup(d) {
-    const isObj = function (v) { return !!v && typeof v === 'object' && !Array.isArray(v); };
-    const safeInt = function (v, min) { return Number.isSafeInteger(v) && v >= (min == null ? 0 : min); };
-    const validDate = function (v) {
-      if (typeof v !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(v)) return false;
-      const p = v.split('-').map(Number), y = p[0], m = p[1], day = p[2];
-      if (y < 1000 || m < 1 || m > 12) return false;
-      const leap = y % 4 === 0 && (y % 100 !== 0 || y % 400 === 0);
-      const days = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-      return day >= 1 && day <= days[m - 1];
-    };
-    const allowedKeys = function (obj, keys) { return Object.keys(obj).every(function (k) { return keys.indexOf(k) >= 0; }); };
-    if (!isObj(d) || d.v !== 2 || !isObj(d.settings) || !isObj(d.months)) return null;
-    const src = d.settings;
-    if (src.income != null && (!isObj(src.income) || !allowedKeys(src.income, ['salary', 'stipend', 'extra']))) return null;
-    if (src.credit != null && (!isObj(src.credit) || !allowedKeys(src.credit, ['balance', 'setAt', 'due', 'fromSavings']))) return null;
-    if (src.pct != null && (!isObj(src.pct) || Object.keys(src.pct).some(function (k) { return !Object.prototype.hasOwnProperty.call(catById, k) || !Number.isFinite(src.pct[k]) || src.pct[k] < 0 || src.pct[k] > 100; }))) return null;
-    if (src.income && ['salary', 'stipend', 'extra'].some(function (k) { return src.income[k] != null && !safeInt(src.income[k]); })) return null;
-    if (src.credit && (
-      ['balance', 'fromSavings'].some(function (k) { return src.credit[k] != null && !safeInt(src.credit[k]); }) ||
-      (src.credit.setAt != null && (!Number.isSafeInteger(src.credit.setAt) || src.credit.setAt < 0)) ||
-      (src.credit.due != null && src.credit.due !== '' && !validDate(src.credit.due))
-    )) return null;
-    if (src.roundStep != null && !safeInt(src.roundStep, 1)) return null;
-    if (src.roundDefault != null && typeof src.roundDefault !== 'boolean') return null;
-    if (src.setupDone != null && typeof src.setupDone !== 'boolean') return null;
-
-    let accountIds = ['main', 'cash'];
-    if (src.accounts != null) {
-      if (!Array.isArray(src.accounts) || src.accounts.length < 1 || src.accounts.length > 1000) return null;
-      const ids = new Set();
-      for (const a of src.accounts) {
-        if (!isObj(a) || typeof a.id !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(a.id) || ['credit', '__proto__', 'constructor', 'prototype'].indexOf(a.id) >= 0 || ids.has(a.id)) return null;
-        if (a.name != null && (typeof a.name !== 'string' || a.name.length > 100)) return null;
-        if (a.kind != null && ['cash', 'debit'].indexOf(a.kind) < 0) return null;
-        if (a.start != null && !safeInt(a.start)) return null;
-        if (a.cashback != null && (!Number.isFinite(a.cashback) || a.cashback < 0 || a.cashback > 100)) return null;
-        if (a.round != null && typeof a.round !== 'boolean') return null;
-        if (a.color != null && ACC_COLORS.indexOf(a.color) < 0) return null;
-        ids.add(a.id);
-      }
-      accountIds = Array.from(ids);
-    }
-    if (src.lastAcc != null && (typeof src.lastAcc !== 'string' || accountIds.indexOf(src.lastAcc) < 0)) return null;
-    if (src.look != null) {
-      if (!isObj(src.look) || (src.look.mode != null && ['auto', 'light', 'dark'].indexOf(src.look.mode) < 0) ||
-          (src.look.accent != null && ACCENTS.indexOf(src.look.accent) < 0) ||
-          (src.look.dim != null && (!Number.isFinite(src.look.dim) || src.look.dim < 0 || src.look.dim > 90))) return null;
-    }
-    if (src.tips != null && (!isObj(src.tips) || Object.keys(src.tips).some(function (k) { return ['__proto__', 'constructor', 'prototype'].indexOf(k) >= 0 || typeof src.tips[k] !== 'boolean'; }))) return null;
-    if (src.wishes != null) {
-      if (!Array.isArray(src.wishes) || src.wishes.length > 500 || src.wishes.some(function (w) {
-        return !isObj(w) || typeof w.id !== 'string' || !/^[A-Za-z0-9_-]{1,100}$/.test(w.id) ||
-          !safeInt(w.a, 1) || (w.ts != null && (!Number.isSafeInteger(w.ts) || w.ts < 0)) ||
-          (w.name != null && typeof w.name !== 'string') || (w.st != null && ['w', 'b', 'c'].indexOf(w.st) < 0);
-      })) return null;
-    }
-
-    const validMonth = /^\d{4}-(0[1-9]|1[0-2])$/;
-    const months = Object.create(null), seenIds = new Set();
-    for (const k of Object.keys(d.months)) {
-      const month = d.months[k];
-      if (!validMonth.test(k) || !isObj(month) || !isObj(month.tx)) return null;
-      const tx = Object.create(null);
-      for (const id of Object.keys(month.tx)) {
-        const x = month.tx[id];
-        if (!isObj(x) || typeof x.id !== 'string' || x.id !== id || !/^[A-Za-z0-9_-]{1,100}$/.test(id) || seenIds.has(id) ||
-            !validDate(x.d) || monthOf(x.d) !== k || ['e', 'i', 't', 'p', 's', 'w'].indexOf(x.t) < 0 ||
-            !safeInt(x.a, 1) || !Number.isSafeInteger(x.ts) || x.ts < 0 ||
-            (x.r != null && !safeInt(x.r)) || (x.n != null && (typeof x.n !== 'string' || x.n.length > 500)) ||
-            (x.reg != null && typeof x.reg !== 'boolean') || (x.m != null && ['d', 'k', 'n'].indexOf(x.m) < 0) ||
-            (x.acc != null && (typeof x.acc !== 'string' || !x.acc))) return null;
-        const acc = x.acc || (x.m === 'k' ? 'credit' : x.m === 'n' ? 'cash' : 'main');
-        const isAccount = accountIds.indexOf(acc) >= 0;
-        if (x.t === 'e') {
-          if (!Object.prototype.hasOwnProperty.call(catById, x.c) || catById[x.c].g === 'save' || (acc !== 'credit' && !isAccount) || (x.r > 0 && acc === 'credit')) return null;
-        } else if (x.t === 'i') {
-          if (acc === 'credit' || !isAccount || (x.r || 0) !== 0) return null;
-        } else if (x.t === 't') {
-          if (!isAccount || typeof x.to !== 'string' || accountIds.indexOf(x.to) < 0 || x.to === acc || (x.r || 0) !== 0) return null;
-        } else if (x.t === 'p') {
-          if (!isAccount || x.c !== 'credit' || (x.r || 0) !== 0) return null;
-        } else if (x.t === 's' || x.t === 'w') {
-          if (!isAccount || !Object.prototype.hasOwnProperty.call(catById, x.c) || catById[x.c].g !== 'save' || (x.r || 0) !== 0) return null;
-        }
-        const clean = { id: x.id, d: x.d, t: x.t, a: x.a, ts: x.ts };
-        ['c', 'r', 'm', 'n', 'acc', 'to', 'reg'].forEach(function (field) { if (x[field] != null) clean[field] = x[field]; });
-        tx[id] = clean;
-        seenIds.add(id);
-      }
-      months[k] = { tx: tx };
-    }
-    if (!savingsLedgerValid(months)) return null;
-    return { settings: withDefaults(src), months: months };
+  function totalSaved(months) {
+    let r = 0;
+    allTx(months).forEach(function (x) { if (x.t === 's') r += x.a;
+      else if (x.t === 'w') r -= x.a; });
+    return r;
   }
-
 
   return { pauseHours: pauseHours, healthStats: healthStats, ACC_COLORS: ACC_COLORS, ACCENTS: ACCENTS, GROUPS: GROUPS, CATS: CATS, catById: catById, defaults: defaults, withDefaults: withDefaults,
     dateStr: dateStr, monthOf: monthOf, shiftMonth: shiftMonth, daysIn: daysIn, parseMoney: parseMoney,
     roundUp: roundUp, allTx: allTx, monthTx: monthTx, accOf: accOf, isCredit: isCredit, accountNet: accountNet,
-    accountBalance: accountBalance, accountUsed: accountUsed, cashbackMonth: cashbackMonth, cashbackForAmount: cashbackForAmount, savingsBalance: savingsBalance, savingsBalanceAt: savingsBalanceAt, savingsLedgerValid: savingsLedgerValid,
+    accountBalance: accountBalance, accountUsed: accountUsed, cashbackMonth: cashbackMonth,
     creditDebt: creditDebt, calcMonth: calcMonth, status: status, creditStats: creditStats,
-    totalRound: totalRound, totalSaved: totalSaved, validateBackup: validateBackup };
+    totalRound: totalRound, totalSaved: totalSaved };
 })();
 
 
@@ -876,18 +758,7 @@ const TIPS = {
     Store.saveMonth(mk);
   }
   function delTx(id, mk) {
-    if (state.months[mk] && state.months[mk].tx && state.months[mk].tx[id]) {
-      const removed = state.months[mk].tx[id];
-      delete state.months[mk].tx[id];
-      if (!L.savingsLedgerValid(state.months)) {
-        state.months[mk].tx[id] = removed;
-        toast('Нельзя удалить запись: после неё снятия превысят доступные накопления.');
-        return false;
-      }
-      Store.saveMonth(mk);
-      return true;
-    }
-    return false;
+    if (state.months[mk] && state.months[mk].tx) { delete state.months[mk].tx[id]; Store.saveMonth(mk); }
   }
 
   /* ---------- общие куски разметки ---------- */
@@ -903,8 +774,8 @@ const TIPS = {
     else if (x.t === 'i') { title = x.reg ? (x.n || 'Регулярный доход') : 'Разовый доход'; if (x.reg) sub = ''; dot = 'inc'; amt = '+' + fmt(x.a, dec); cls = ' in'; }
     else if (x.t === 'p') { title = 'Погашение кредитки'; dot = 'pay'; amt = fmt(-x.a, dec); }
     else if (x.t === 't') { title = 'Перевод'; dot = 'xfer'; amt = fmt(x.a, dec); }
-    else if (x.t === 'w') { const c = L.catById[x.c]; title = 'Снятие: ' + (c ? c.name.toLowerCase() : 'накопления'); dot = 'save'; amt = '+' + fmt(x.a, dec); cls = ' in'; }
     else { const c = L.catById[x.c]; title = c ? c.name : 'Накопления'; dot = 'save'; amt = '→ ' + fmt(x.a, dec); }
+    if (x.time) sub += ' · ' + esc(x.time);
     if (x.t === 't') sub += ' ' + accTag(acc) + ' → ' + accTag(x.to);
     else sub += ' ' + accTag(acc);
     if (x.t === 'e' && x.r > 0) sub += ' <span class="tag soft">+' + fmt(x.r, x.r % 100 !== 0) + ' в копилку</span>';
@@ -918,7 +789,7 @@ const TIPS = {
     let h = '<button class="row" data-a="sel" data-id="' + esc(x.id) + '" data-mk="' + esc(L.monthOf(x.d)) + '">' + inner + '</button>';
     if (ui.sel === x.id) {
       if (ui.del === x.id) h += '<div class="actions"><span class="small" style="align-self:center">Удалить запись?</span><button class="btn danger sm" data-a="delyes" data-id="' + esc(x.id) + '" data-mk="' + esc(L.monthOf(x.d)) + '">Да, удалить</button><button class="btn ghost sm" data-a="delno">Отмена</button></div>';
-      else h += '<div class="actions"><button class="btn ghost sm" data-a="del" data-id="' + esc(x.id) + '">Удалить</button></div>';
+      else h += '<div class="actions"><button class="btn ghost sm" data-a="txedit" data-id="' + esc(x.id) + '" data-mk="' + esc(L.monthOf(x.d)) + '">Изменить</button><button class="btn ghost sm" data-a="del" data-id="' + esc(x.id) + '">Удалить</button></div>';
     }
     return h;
   }
@@ -1011,8 +882,16 @@ const TIPS = {
     const mk = ui.month, c = L.calcMonth(state.months, state.settings, mk);
     let h = monthBar(mk);
     h += '<section class="card"><div class="grid2"><div><div class="label">Расходы</div><div class="stat num">' + fmt(c.spentTotal) + '</div></div>' +
-      '<div><div class="label">Чистое изменение накоплений</div><div class="stat num">' + fmt(c.saveTotal + c.round) + '</div></div></div>' +
+      '<div><div class="label">Отложено</div><div class="stat num">' + fmt(c.saveTotal + c.round) + '</div></div></div>' +
       (c.oneOff > 0 ? '<div class="small muted num">Разовые доходы: +' + fmt(c.oneOff) + '</div>' : '') + '</section>';
+    const chosen = ui.day && ui.day.slice(0, 7) === mk ? ui.day : mk + '-01';
+    const dailyLimit = Math.floor(c.spendPlan / L.daysIn(mk));
+    const dayExpenses = c.txs.filter(function (x) { return x.d === chosen && x.t === 'e'; });
+    const daySpent = dayExpenses.reduce(function (sum, x) { return sum + x.a; }, 0);
+    h += '<section class="card"><h2>Бюджет на день</h2><div class="field"><label for="dayPick">Выберите день</label><input class="inp" type="date" id="dayPick" value="' + esc(chosen) + '"></div>' +
+      '<div class="grid2"><div><div class="label">Лимит на день</div><div class="stat num">' + fmt(dailyLimit) + '</div></div><div><div class="label">Потрачено</div><div class="stat num">' + fmt(daySpent) + '</div></div></div>' +
+      '<div class="small num">' + (daySpent > dailyLimit ? 'Перерасход: ' + fmt(daySpent - dailyLimit) : 'Осталось: ' + fmt(dailyLimit - daySpent)) + '</div>' +
+      '<div class="list">' + (dayExpenses.length ? dayExpenses.map(function (x) { return rowHtml(x, true); }).join('') : '<div class="small muted">Расходов за день нет</div>') + '</div></section>';
     if (!c.txs.length) return h + '<div class="empty">Записей за этот месяц нет.</div>';
     const byDay = {};
     c.txs.forEach(function (x) { (byDay[x.d] = byDay[x.d] || []).push(x); });
@@ -1025,17 +904,16 @@ const TIPS = {
   function catRow(cat, fact, plan) {
     let st, figsR;
     if (cat.g === 'save') {
-      st = fact < 0 ? { k: 'warn', t: 'Снятие' } : plan > 0 && fact >= plan ? { k: 'good', t: 'Цель выполнена' } : fact > 0 ? { k: 'idle', t: 'В процессе' } : { k: 'idle', t: '—' };
-      figsR = fact < 0 ? 'снято сверх пополнений ' + fmt(-fact) : (plan > fact ? 'осталось отложить ' + fmt(plan - fact) : (plan > 0 ? 'выполнено' : 'лимит не задан'));
+      st = plan > 0 && fact >= plan ? { k: 'good', t: 'Цель выполнена' } : fact > 0 ? { k: 'idle', t: 'В процессе' } : { k: 'idle', t: '—' };
+      figsR = plan > fact ? 'осталось отложить ' + fmt(plan - fact) : (plan > 0 ? 'выполнено' : 'лимит не задан');
     } else {
       st = L.status(fact, plan);
       figsR = plan > 0 ? (fact <= plan ? 'осталось ' + fmt(plan - fact) : 'сверх лимита ' + fmt(fact - plan)) : 'лимит не задан';
     }
-    const ratio = plan > 0 ? Math.max(0, Math.min(1, fact / plan)) : (fact > 0 ? 1 : 0);
-    const factLabel = cat.g === 'save' ? (fact < 0 ? 'Чистый отток ' + fmt(-fact) : 'Отложено ' + fmt(fact)) : 'Потрачено ' + fmt(fact);
+    const ratio = plan > 0 ? Math.min(1, fact / plan) : (fact > 0 ? 1 : 0);
     return '<div class="cat"><div class="head"><span class="n"><span class="dot ' + cat.g + '"></span>' + esc(cat.name) + '</span><span class="pill ' + st.k + '">' + st.t + '</span></div>' +
       '<div class="track"><div class="fill ' + (st.k === 'idle' ? '' : st.k) + '" style="width:' + (ratio * 100).toFixed(1) + '%"></div></div>' +
-      '<div class="figs num"><span>' + factLabel + ' из ' + fmt(plan) + '</span><span>' + figsR + '</span></div></div>';
+      '<div class="figs num"><span>' + (cat.g === 'save' ? 'Отложено ' : 'Потрачено ') + fmt(fact) + ' из ' + fmt(plan) + '</span><span>' + figsR + '</span></div></div>';
   }
 
   function viewBudget() {
@@ -1043,14 +921,13 @@ const TIPS = {
     let h = monthBar(mk);
     h += '<button class="card" data-a="go:tips" style="text-align:left"><span class="label">Школа финансов</span><span>Советы, показатели бюджета и список желаний</span></button>';
     h += '<section class="card"><div class="grouphead"><h2>Доход и лимиты</h2><button class="link small" data-a="edit">' + (ui.edit ? 'Готово' : 'Настроить') + '</button></div>';
-    h += '<div class="formrow"><span>Доход для бюджета</span><b class="num">' + fmt(c.income) + '</b></div>';
-    h += '<div class="formrow"><span>Плановый регулярный доход</span><b class="num">' + fmt(c.plannedIncome) + '</b></div>';
+    h += '<div class="formrow"><span>Доход в месяц</span><b class="num">' + fmt(c.income) + '</b></div>';
     if (c.reserve > 0) h += '<div class="formrow"><span>Отложено на кредитку</span><b class="num">−' + fmt(c.reserve, true) + '</b></div>';
-    h += '<div class="formrow"><span>Уже получено регулярно</span><b class="num">' + fmt(c.received) + '</b></div>';
-    if (c.plannedIncome > c.received) h += '<div class="formrow"><span>Ещё ожидается</span><b class="num">' + fmt(c.plannedIncome - c.received) + '</b></div>';
+    h += '<div class="formrow"><span>Уже получено (аванс, зарплата…)</span><b class="num">' + fmt(c.received) + '</b></div>';
+    if (c.income > c.received) h += '<div class="formrow"><span>Ещё ожидается</span><b class="num">' + fmt(c.income - c.received) + '</b></div>';
     h += '<div class="formrow"><span>Распределяется по лимитам</span><b class="num">' + fmt(c.available) + '</b></div>';
     if (c.reserve > 0) h += '<div class="hint warn">В этом месяце нужно закрыть кредитку, поэтому часть дохода зарезервирована под долг.</div>';
-    if (c.oneOff > 0) h += '<div class="hint">Разовые доходы за месяц: +' + fmt(c.oneOff) + '. Они учтены в доступном бюджете.</div>';
+    if (c.oneOff > 0) h += '<div class="hint">Разовые доходы за месяц: +' + fmt(c.oneOff) + '. В лимиты они не входят, лучше отправить их в накопления.</div>';
     h += '</section>';
 
     if (ui.edit) {
@@ -1126,12 +1003,7 @@ const TIPS = {
     else if (cs.days < 0) h += '<div class="hint bad">Срок ' + dateRu(cs.due) + ' прошёл. Беспроцентный период мог закончиться, погасите долг как можно скорее.</div>';
     else h += '<div class="hint ' + (cs.days <= 7 ? 'warn' : '') + '">Беспроцентный период до ' + dateRu(cs.due) + ': осталось ' + cs.days + ' ' + plural(cs.days, ['день', 'дня', 'дней']) +
       '. Чтобы успеть, откладывайте по ' + fmt(cs.perWeek) + ' в неделю.</div>';
-    if (s.credit.fromSavings > 0) {
-      const creditMonth = s.credit.due ? L.calcMonth(state.months, s, s.credit.due.slice(0, 7)) : c;
-      const savingsAvailable = Math.max(0, L.savingsBalance(state.months));
-      h += '<div class="small muted num">Из накоплений на долг учтено: ' + fmt(creditMonth.savingsCover) + ' · доступно накоплений: ' + fmt(savingsAvailable) + '</div>';
-      if (savingsAvailable < s.credit.fromSavings) h += '<div class="hint warn">В накоплениях сейчас меньше суммы, указанной для покрытия кредита. Резерв рассчитан только по доступному остатку.</div>';
-    }
+    if (s.credit.fromSavings > 0) h += '<div class="small muted num">Из накоплений на долг: ' + fmt(s.credit.fromSavings) + '</div>';
     h += '<div class="small muted">Покупки по кредитке увеличивают долг, платежи уменьшают. Если закрываете карту, платите только с дебетовой.</div>';
     h += '<button class="btn primary block" data-a="pay">Внести платёж</button>';
     if (ui.creditEdit) {
@@ -1150,7 +1022,7 @@ const TIPS = {
     h += '</select></div></section>';
 
     h += '<section class="card"><h2>Накопления и инвестиции</h2><div class="stat num">' + fmt(L.totalSaved(state.months)) + '</div>' +
-      '<div class="small muted">Остаток пополнений и округлений за вычетом снятий. Переводы между обычными счетами нейтральны; для накопления используйте отдельную запись.</div>' +
+      '<div class="small muted">Переводы на инвестиционный счёт и в подушку безопасности. Рост или падение стоимости инвестиций здесь не считается.</div>' +
       '<button class="btn ghost block" data-a="savebtn">Добавить накопление</button></section>';
 
     h += lookCard();
@@ -1158,6 +1030,9 @@ const TIPS = {
       '<button class="btn ghost block" data-a="bkcopy">Скопировать копию</button>' +
       '<textarea id="bkText" class="inp" rows="3" style="min-height:84px" placeholder="Чтобы восстановить, вставьте сюда копию"></textarea>' +
       '<button class="btn ghost block" data-a="bkrestore">Восстановить из копии</button></section>';
+    h += '<section class="card"><h2>Сброс данных</h2><div class="small muted">Сначала сохраните резервную копию. Отменить сброс нельзя.</div>' +
+      '<button class="btn ghost block" data-a="resetfinance">Сбросить финансовые данные</button>' +
+      '<button class="btn danger block" data-a="resetall">Полный сброс приложения</button></section>';
 
     let note;
     if (mode === 'cloud') note = 'Данные хранятся в вашем аккаунте Claude и доступны на всех ваших устройствах.';
@@ -1261,7 +1136,7 @@ const TIPS = {
         '<button class="tt" data-a="tipopen" data-id="' + x.id + '" style="text-align:left">' + esc(x.t) + (x.w ? ' ' + pillHtml('warn', 'спорно') : '') + '</button></div>';
       if (open) {
         h += '<div class="tipbody"><div class="how"><b>Как проверять:</b> ' + esc(x.how) + '</div><div class="src">Источник: ' + esc(x.src) + '</div>';
-        if (x.url) h += '<a class="link small" href="' + esc(x.url) + '" target="_blank" rel="noopener noreferrer">Открыть источник</a>';
+        if (typeof x.url === 'string' && /^https:\/\/[^\s/]+/i.test(x.url)) h += '<a class="link small" href="' + esc(x.url) + '" target="_blank" rel="noopener noreferrer">Открыть источник</a>';
         h += '</div>';
       }
       h += '</div>';
@@ -1299,7 +1174,7 @@ const TIPS = {
   /* ---------- оформление ---------- */
   const WKEY = 'balans-wallpaper';
   let wallData = null;
-  try { wallData = localStorage.getItem(WKEY); } catch (e) { wallData = null; }
+  try { wallData = localStorage.getItem(WKEY); if (wallData && (!/^data:image\/jpeg;base64,[A-Za-z0-9+/=]+$/.test(wallData) || wallData.length > 2 * 1024 * 1024)) wallData = null; } catch (e) { wallData = null; }
   function applyLook() {
     const lk = state.settings.look, root = document.documentElement;
     const sysDark = !!(window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches);
@@ -1317,10 +1192,12 @@ const TIPS = {
   }
   if (window.matchMedia) { try { window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', applyLook); } catch (e) { /* старый браузер */ } }
   function setWall(file) {
+    if (!file || !/^image\/(png|jpeg|webp)$/i.test(file.type) || file.size > 5 * 1024 * 1024) { toast('Выберите PNG, JPEG или WebP размером до 5 МБ.'); return; }
     const fr = new FileReader();
     fr.onload = function () {
       const img = new Image();
       img.onload = function () {
+        if (!img.width || !img.height || img.width * img.height > 40000000) { toast('Слишком большое изображение.'); return; }
         const k = Math.min(1, 1200 / Math.max(img.width, img.height));
         const c = document.createElement('canvas'); c.width = Math.max(1, Math.round(img.width * k)); c.height = Math.max(1, Math.round(img.height * k));
         c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
@@ -1370,15 +1247,16 @@ const TIPS = {
   }
 
   /* ---------- окно добавления ---------- */
-  const TYPES = [['e', 'Расход'], ['i', 'Доход'], ['t', 'Перевод'], ['p', 'Погашение'], ['s', 'Накопления'], ['w', 'Снятие']];
+  const TYPES = [['e', 'Расход'], ['i', 'Доход'], ['t', 'Перевод'], ['p', 'Погашение'], ['s', 'Накопления']];
   function sheetShell() {
-    let h = '<div class="in"><div class="top"><h2>Новая запись</h2><button class="btn ghost sm" data-s="close">Закрыть</button></div>';
+    let h = '<div class="in"><div class="top"><h2>' + (sh.editId ? 'Изменить запись' : 'Новая запись') + '</h2><button class="btn ghost sm" data-s="close">Закрыть</button></div>';
     h += '<div class="seg" id="shType" role="group" aria-label="Тип записи">';
     TYPES.forEach(function (t) { h += '<button data-s="type:' + t[0] + '" class="' + (sh.type === t[0] ? 'on' : '') + '">' + t[1] + '</button>'; });
     h += '</div>';
     h += '<div class="field"><label for="shAmount">Сумма</label><div class="amountwrap"><input id="shAmount" class="inp amount num" inputmode="decimal" autocomplete="off" placeholder="0"><span class="cur">₽</span></div></div>';
     h += '<div id="shDyn" style="display:flex;flex-direction:column;gap:16px"></div>';
     h += '<div class="field"><label for="shDate">Дата</label><input id="shDate" class="inp" type="date"></div>';
+    h += '<div class="field"><label for="shTime">Время</label><input id="shTime" class="inp" type="time"></div>';
     h += '<div class="field"><label for="shNote">Заметка (необязательно)</label><input id="shNote" class="inp" maxlength="80" autocomplete="off"></div>';
     h += '<div id="shPrev"></div><div class="err" id="shErr" role="alert"></div>';
     h += '<button class="btn primary block" data-s="save">Сохранить</button></div>';
@@ -1396,8 +1274,8 @@ const TIPS = {
   }
   function drawDyn() {
     let h = '';
-    if (sh.type === 'e' || sh.type === 's' || sh.type === 'w') {
-      const cats = L.CATS.filter(function (c) { return sh.type === 's' || sh.type === 'w' ? c.g === 'save' : c.g !== 'save'; });
+    if (sh.type === 'e' || sh.type === 's') {
+      const cats = L.CATS.filter(function (c) { return sh.type === 's' ? c.g === 'save' : c.g !== 'save'; });
       h += '<div class="field"><span class="lab">Категория</span><div class="chips">';
       cats.forEach(function (c) { h += '<button class="chip' + (sh.cat === c.id ? ' on' : '') + '" data-s="cat:' + c.id + '">' + esc(c.name) + '</button>'; });
       h += '</div></div>';
@@ -1421,7 +1299,6 @@ const TIPS = {
       h += '<div class="field"><span class="lab">Долг по кредитке: ' + fmt(d, true) + '</span><div class="chips"><button class="chip" data-s="full">Погасить весь долг</button></div></div>';
     }
     if (sh.type === 's') h += '<div class="field"><span class="lab">С какого счёта</span>' + accChips(sh.acc, 'acc', false) + '</div>';
-    if (sh.type === 'w') h += '<div class="field"><span class="lab">На какой счёт вернуть деньги</span>' + accChips(sh.acc, 'acc', false) + '</div>'; 
     if (sh.type === 't') {
       h += '<div class="field"><span class="lab">Откуда</span>' + accChips(sh.acc, 'acc', false) + '</div>';
       h += '<div class="field"><span class="lab">Куда</span>' + accChips(sh.to, 'to', false) + '</div>';
@@ -1444,23 +1321,20 @@ const TIPS = {
         h = a > d ? '<div class="hint bad num">Платёж больше долга (' + fmt(d, true) + ')</div>' : '<div class="hint good num">Долг после платежа: ' + fmt(d - a, true) + '</div>';
       } else if (sh.type === 's') {
         h = '<div class="hint num">Запишется в накопления: ' + fmt(a, true) + '</div>';
-      } else if (sh.type === 'w') {
-        const date = $('#shDate').value;
-        const available = Math.max(0, L.savingsBalanceAt(state.months, date));
-        h = a > available ? '<div class="hint bad num">Доступно накоплений на эту дату: ' + fmt(available, true) + '</div>' : '<div class="hint num">Остаток после снятия: ' + fmt(available - a, true) + '</div>';
       } else if (sh.type === 't') {
         h = '<div class="hint num">' + esc(accName(sh.acc)) + ' → ' + esc(accName(sh.to)) + ': ' + fmt(a, true) + '</div>';
       }
-      if (sh.type === 'e' && ac && ac.cashback > 0) h += '<div class="hint num">Кэшбэк по карте: примерно ' + fmt(L.cashbackForAmount(a, ac.cashback), true) + '</div>';
+      if (sh.type === 'e' && ac && ac.cashback > 0) h += '<div class="hint num">Кэшбэк по карте: примерно ' + fmt(Math.floor(a * ac.cashback / 100), true) + '</div>';
     }
     el.innerHTML = h;
   }
   function openSheet(preset) {
     if (!ready) { toast('Загружаю данные, подождите секунду.'); return; }
     const acc = defaultAcc(), ac = accById(acc);
-    sh = Object.assign({ type: 'e', cat: null, acc: acc, to: otherAcc(acc), round: !!(ac && ac.round), date: L.dateStr(new Date()) }, preset || {});
+    sh = Object.assign({ type: 'e', cat: null, acc: acc, to: otherAcc(acc), round: !!(ac && ac.round), date: L.dateStr(new Date()), time: new Date().toTimeString().slice(0, 5) }, preset || {});
     sheet.innerHTML = sheetShell(); sheet.hidden = false; document.body.style.overflow = 'hidden';
-    $('#shDate').value = sh.date;
+    $('#shDate').value = sh.date; $('#shTime').value = sh.time || '';
+    if (sh.editId) { $('#shAmount').value = (sh.amount / 100).toFixed(2).replace('.', ','); $('#shNote').value = sh.note || ''; }
     drawDyn(); updatePreview();
     sheet.scrollTop = 0;
     const a = $('#shAmount'); if (a) a.focus();
@@ -1475,15 +1349,15 @@ const TIPS = {
   }
   function saveSheet() {
     const err = $('#shErr');
-    const a = L.parseMoney($('#shAmount').value), d = $('#shDate').value, note = $('#shNote').value.trim();
+    const a = L.parseMoney($('#shAmount').value), d = $('#shDate').value, note = $('#shNote').value.trim(), time = $('#shTime').value;
     if (isNaN(a) || a <= 0) { err.textContent = 'Введите сумму, например 560 или 56,50.'; $('#shAmount').focus(); return; }
     if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) { err.textContent = 'Выберите дату.'; return; }
-    if ((sh.type === 'e' || sh.type === 's' || sh.type === 'w') && !sh.cat) { err.textContent = 'Выберите категорию.'; return; }
+    if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(time)) { err.textContent = 'Укажите время операции.'; return; }
+    if ((sh.type === 'e' || sh.type === 's') && !sh.cat) { err.textContent = 'Выберите категорию.'; return; }
     if (sh.type === 't' && (!sh.to || sh.to === sh.acc)) { err.textContent = 'Выберите два разных счёта.'; return; }
-    const x = { id: Date.now().toString(36) + Math.random().toString(36).slice(2, 7), ts: Date.now(), d: d, t: sh.type, c: null, a: a, r: 0, m: 'd', n: note, acc: sh.acc };
-    if (sh.type === 'e' || sh.type === 's' || sh.type === 'w') x.c = sh.cat;
+    const x = { id: sh.editId || (Date.now().toString(36) + Math.random().toString(36).slice(2, 7)), ts: sh.editTs || Date.now(), d: d, time: time, t: sh.type, c: null, a: a, r: 0, m: 'd', n: note, acc: sh.acc };
+    if (sh.type === 'e' || sh.type === 's') x.c = sh.cat;
     if (sh.type === 'p') x.c = 'credit';
-    if (sh.type === 'w') { const available = Math.max(0, L.savingsBalanceAt(state.months, d)); if (a > available) { err.textContent = 'Сумма снятия больше доступных на эту дату накоплений (' + fmt(available, true) + ').'; return; } }
     if (sh.type === 't') x.to = sh.to;
     if (sh.type === 'i' && sh.reg) x.reg = true;
     if (sh.type === 'e') {
@@ -1491,15 +1365,17 @@ const TIPS = {
       else if (roundOn()) x.r = L.roundUp(a, state.settings.roundStep);
     }
     if (sh.type === 'p') {
-      const debt = L.creditDebt(state.months, state.settings);
+      const old = sh.editId && state.months[sh.editMk] && state.months[sh.editMk].tx[sh.editId];
+      const debt = L.creditDebt(state.months, state.settings) + (old && old.t === 'p' ? old.a : 0);
       if (a > debt) { err.textContent = 'Платёж больше долга. Максимум ' + fmt(debt, true) + '.'; return; }
     }
+    if (sh.editId) delTx(sh.editId, sh.editMk);
     addTx(x);
     if (sh.acc !== 'credit' && sh.type !== 't' && state.settings.lastAcc !== sh.acc) { state.settings.lastAcc = sh.acc; Store.saveSettings(); }
     ui.month = L.monthOf(d);
-    const i = txInfo(x);
+    const i = txInfo(x), wasEdit = !!sh.editId;
     closeSheet(); render();
-    toast('Добавлено: ' + i.title + ' ' + i.amt.replace('→ ', '') + (x.r > 0 ? ' · в копилку ' + fmt(x.r, x.r % 100 !== 0) : ''));
+    toast((wasEdit ? 'Изменено: ' : 'Сохранено: ') + i.title + ' ' + i.amt.replace('→ ', '') + (x.r > 0 ? ' · в копилку ' + fmt(x.r, x.r % 100 !== 0) : ''));
   }
 
   /* ---------- события ---------- */
@@ -1526,6 +1402,7 @@ const TIPS = {
   app.addEventListener('input', function (e) {
     if (e.target.getAttribute && e.target.getAttribute('data-f') === 'look.dim') document.documentElement.style.setProperty('--wdim', e.target.value + '%');
   });
+  app.addEventListener('change', function (e) { if (e.target.id === 'dayPick') { ui.day = e.target.value; render(); } });
   app.addEventListener('change', function (e) {
     if (e.target.id === 'wallFile' && e.target.files && e.target.files[0]) setWall(e.target.files[0]);
   });
@@ -1536,9 +1413,10 @@ const TIPS = {
     if (a === 'm-' || a === 'm+') { ui.month = L.shiftMonth(ui.month, a === 'm-' ? -1 : 1); ui.sel = ui.del = null; render(); }
     else if (a.indexOf('go:') === 0) { ui.tab = a.slice(3); ui.tipTopic = null; ui.sel = ui.del = null; render(); window.scrollTo(0, 0); }
     else if (a === 'sel') { ui.sel = ui.sel === id ? null : id; ui.del = null; render(); }
+    else if (a === 'txedit') { const mk = t.getAttribute('data-mk'), x = state.months[mk] && state.months[mk].tx[id]; if (x) openSheet({ editId: id, editMk: mk, editTs: x.ts, type: x.t, cat: x.c, acc: L.accOf(x), to: x.to, date: x.d, time: x.time || '12:00', amount: x.a, note: x.n, reg: !!x.reg, regName: x.n, round: !!x.r }); }
     else if (a === 'del') { ui.del = id; render(); }
     else if (a === 'delno') { ui.del = null; render(); }
-    else if (a === 'delyes') { const deleted = delTx(id, t.getAttribute('data-mk')); ui.sel = ui.del = null; render(); if (deleted) toast('Запись удалена.'); }
+    else if (a === 'delyes') { delTx(id, t.getAttribute('data-mk')); ui.sel = ui.del = null; render(); toast('Запись удалена.'); }
     else if (a === 'edit') { ui.edit = !ui.edit; render(); }
     else if (a === 'cedit') { ui.creditEdit = !ui.creditEdit; render(); }
     else if (a === 'pay') openSheet({ type: 'p' });
@@ -1599,17 +1477,33 @@ const TIPS = {
       if (cb > 0) { s.credit.balance = cb; s.credit.setAt = Date.now(); const dd = $('#su-cd').value; s.credit.due = /^\d{4}-\d{2}-\d{2}$/.test(dd) ? dd : ''; }
       s.setupDone = true; Store.saveSettings(); render(); toast('Настройка сохранена.');
     }
+    else if (a === 'resetfinance' || a === 'resetall') {
+      if (!window.confirm('Удалить данные без возможности восстановления? Сначала сохраните резервную копию.')) return;
+      if (!window.confirm('Подтвердите сброс ещё раз.')) return;
+      const keys = Object.keys(state.months);
+      state.months = {}; keys.forEach(function (k) { Store.saveMonth(k); });
+      if (a === 'resetall') { state.settings = L.withDefaults(null); try { localStorage.removeItem(WKEY); } catch (e) {} wallData = null; }
+      else { const s = state.settings; s.income = { salary: 0, stipend: 0, extra: 0 }; s.credit.balance = 0; s.credit.fromSavings = 0; s.credit.due = ''; s.credit.setAt = Date.now(); s.accounts.forEach(function (ac) { ac.start = 0; }); s.wishes = []; }
+      Store.saveSettings(); ui.sel = ui.del = null; render(); toast('Сброс выполнен.');
+    }
     else if (a === 'bkcopy') {
       const json = JSON.stringify({ v: 2, settings: state.settings, months: state.months });
       const manual = function () { const ta = $('#bkText'); ta.value = json; ta.focus(); ta.select(); toast('Скопируйте выделенный текст вручную.'); };
       if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(json).then(function () { toast('Копия скопирована. Сохраните её в заметках.'); }, manual); else manual();
     }
     else if (a === 'bkrestore') {
-      let d; try { d = JSON.parse($('#bkText').value.trim()); } catch (er) { toast('Не удалось прочитать копию.'); return; }
-      const restored = L.validateBackup(d);
-      if (!restored) { toast('Копия повреждена или имеет неподдерживаемый формат. Текущие данные не изменены.'); return; }
-      state.settings = restored.settings; state.months = restored.months;
-      Store.saveSettings(); Object.keys(restored.months).forEach(function (k) { Store.saveMonth(k); });
+      const backupText = $('#bkText').value.trim();
+      if (backupText.length > 5 * 1024 * 1024) { toast('Копия слишком большая (максимум 5 МБ).'); return; }
+      let d; try { d = JSON.parse(backupText); } catch (er) { toast('Не удалось прочитать копию.'); return; }
+      if (!d || typeof d !== 'object' || Array.isArray(d) || !d.settings || typeof d.settings !== 'object' || Array.isArray(d.settings) || typeof d.months !== 'object' || !d.months || Array.isArray(d.months)) { toast('Это не похоже на копию приложения.'); return; }
+      const monthKeys = Object.keys(d.months);
+      if (monthKeys.length > 240 || !Array.isArray(d.settings.accounts) && d.settings.accounts != null || Array.isArray(d.settings.accounts) && d.settings.accounts.length > 100) { toast('Некорректная структура копии.'); return; }
+      const valid = monthKeys.every(function (k) { const entry = d.months[k], tx = entry && entry.tx; return /^\d{4}-(0[1-9]|1[0-2])$/.test(k) && tx && typeof tx === 'object' && !Array.isArray(tx) && Object.keys(tx).length <= 20000 && Object.keys(tx).every(function (id) { const x = tx[id]; return x && typeof x === 'object' && !Array.isArray(x) && id !== '__proto__' && id !== 'constructor' && id !== 'prototype' && id.length <= 100 && x.id === id && typeof x.a === 'number' && Number.isSafeInteger(x.a) && x.a > 0 && x.a <= 1e12 && (x.n == null || typeof x.n === 'string' && x.n.length <= 2000) && (x.time == null || /^([01]\d|2[0-3]):[0-5]\d$/.test(x.time)) && /^\d{4}-(0[1-9]|1[0-2])-([0-2]\d|3[01])$/.test(x.d) && x.d.slice(0,7) === k && ['e','i','s','w','p','t'].indexOf(x.t) !== -1; }); });
+      if (!valid) { toast('Некорректные операции в резервной копии.'); return; }
+      const oldKeys = Object.keys(state.months);
+      const m = Object.create(null); Object.keys(d.months).forEach(function (k) { const tt = d.months[k] && d.months[k].tx; m[k] = { tx: (tt && typeof tt === 'object') ? tt : {} }; });
+      state.settings = L.withDefaults(d.settings); state.months = m;
+      Store.saveSettings(); oldKeys.filter(function (k) { return !m[k]; }).forEach(function (k) { Store.saveMonth(k); }); Object.keys(m).forEach(function (k) { Store.saveMonth(k); });
       render(); toast('Данные восстановлены.');
     }
   });
@@ -1642,8 +1536,7 @@ const TIPS = {
     else if (a.indexOf('once:') === 0) { sh.reg = false; sh.regName = a.slice(5); $('#shNote').value = a.slice(5); drawDyn(); }
     else if (a === 'full') { const d = L.creditDebt(state.months, state.settings); $('#shAmount').value = (d / 100).toFixed(2).replace('.', ','); updatePreview(); }
   });
-  sheet.addEventListener('input', function (e) { if (e.target.id === 'shAmount') { $('#shErr').textContent = ''; updatePreview(); } else if (e.target.id === 'shDate') updatePreview(); });
-  sheet.addEventListener('change', function (e) { if (e.target.id === 'shDate') updatePreview(); });
+  sheet.addEventListener('input', function (e) { if (e.target.id === 'shAmount') { $('#shErr').textContent = ''; updatePreview(); } });
   document.addEventListener('keydown', function (e) { if (e.key === 'Escape' && sh) closeSheet(); });
 
   render();
