@@ -227,6 +227,13 @@ input[type=range]{width:100%; accent-color:var(--accent)}
 .ol{margin:0; padding-left:20px; display:flex; flex-direction:column; gap:8px}
 a.link{text-decoration:underline; text-underline-offset:2px}
 
+/* Visible localized date label: iOS WebKit may render native date text wider than the flex card. */
+.day-date-wrap { position:relative; width:100%; max-width:100%; min-width:0; }
+.day-date-label { display:none; }
+html.tg-mini .day-date-wrap { height:46px; overflow:hidden; border:1px solid var(--line); border-radius:12px; background:var(--surface); }
+html.tg-mini .day-date-label { display:flex; align-items:center; justify-content:center; position:absolute; inset:0; padding:0 12px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; font:inherit; font-size:16px; color:var(--fg); pointer-events:none; }
+html.tg-mini #dayPick { position:absolute; inset:0; display:block; width:100%; height:100%; min-width:0; max-width:100%; margin:0; padding:0; opacity:0; cursor:pointer; font-size:16px; }
+
 /* Telegram WebView safe areas; ordinary browser layout remains unchanged. */
 html.tg-mini { padding:0; }
 html.tg-mini body { padding-top:12px; padding-bottom:calc(90px + var(--tg-bottom, 0px)); overflow-x:hidden; }
@@ -896,7 +903,7 @@ const TIPS = {
     const dailyLimit = Math.floor(c.spendPlan / L.daysIn(mk));
     const dayExpenses = c.txs.filter(function (x) { return x.d === chosen && x.t === 'e'; });
     const daySpent = dayExpenses.reduce(function (sum, x) { return sum + x.a; }, 0);
-    h += '<section class="card"><h2>Бюджет на день</h2><div class="field"><label for="dayPick">Выберите день</label><input class="inp" type="date" id="dayPick" value="' + esc(chosen) + '"></div>' +
+    h += '<section class="card"><h2>Бюджет на день</h2><div class="field"><label for="dayPick">Выберите день</label><div class="day-date-wrap"><span class="day-date-label" aria-hidden="true">' + esc(new Date(chosen + 'T12:00:00').toLocaleDateString('ru-RU', { day:'numeric', month:'long', year:'numeric' })) + '</span><input class="inp" type="date" id="dayPick" lang="ru" value="' + esc(chosen) + '"></div></div>' +
       '<div class="grid2"><div><div class="label">Лимит на день</div><div class="stat num">' + fmt(dailyLimit) + '</div></div><div><div class="label">Потрачено</div><div class="stat num">' + fmt(daySpent) + '</div></div></div>' +
       '<div class="small num">' + (daySpent > dailyLimit ? 'Перерасход: ' + fmt(daySpent - dailyLimit) : 'Осталось: ' + fmt(dailyLimit - daySpent)) + '</div>' +
       '<div class="list">' + (dayExpenses.length ? dayExpenses.map(function (x) { return rowHtml(x, true); }).join('') : '<div class="small muted">Расходов за день нет</div>') + '</div></section>';
