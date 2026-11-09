@@ -228,9 +228,17 @@ input[type=range]{width:100%; accent-color:var(--accent)}
 a.link{text-decoration:underline; text-underline-offset:2px}
 
 /* Telegram WebView safe areas; ordinary browser layout remains unchanged. */
-html.tg-mini #app { padding-top: max(0px, var(--tg-content-safe-area-inset-top, 0px)); }
-html.tg-mini #nav { padding-bottom: max(0px, var(--tg-safe-area-inset-bottom, 0px)); }
-html.tg-mini #sheet { padding-bottom: max(12px, var(--tg-safe-area-inset-bottom, 0px)); }
+html.tg-mini { padding:0; }
+html.tg-mini body { padding-top:12px; padding-bottom:calc(90px + var(--tg-bottom, 0px)); overflow-x:hidden; }
+html.tg-mini #app { width:100%; min-width:0; }
+html.tg-mini .card, html.tg-mini .field { min-width:0; max-width:100%; }
+html.tg-mini input[type="date"], html.tg-mini input[type="time"] { display:block; min-width:0; max-width:100%; }
+html.tg-mini #nav { padding-bottom:calc(6px + var(--tg-bottom, 0px)); }
+html.tg-mini #sheet { padding-top:calc(12px + var(--tg-top, 0px)); padding-bottom:calc(20px + var(--tg-bottom, 0px)); }
+html.tg-mini #toast { bottom:calc(92px + var(--tg-bottom, 0px)); }
+@media (max-width:420px) { html.tg-mini #nav .in { grid-template-columns:1fr 1fr 64px 1fr 1fr; } html.tg-mini #nav [data-tab] { font-size:10px; } }
+@media (max-height:650px) { html.tg-mini #nav [data-tab] { min-height:44px; } html.tg-mini #nav .add { width:50px; height:50px; margin-top:-14px; } }
+@media (min-width:650px) { html.tg-mini #nav .in { max-width:520px; } }
 </style>
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
 <script src="telegram-adapter.js" defer></script>
@@ -1027,9 +1035,10 @@ const TIPS = {
 
     h += lookCard();
     h += '<section class="card"><h2>Резервная копия</h2><div class="small muted">Данные хранятся только на телефоне. Скопируйте копию и сохраните в заметках, чтобы не потерять её, если удалите приложение.</div>' +
-      '<button class="btn ghost block" data-a="bkcopy">Скопировать копию</button>' +
+      '<button class="btn ghost block" data-a="bkcopy">Скопировать обычную копию (без шифрования)</button>' +
+      '<button class="btn ghost block" data-a="bksecure">Создать зашифрованную копию</button>' +
       '<textarea id="bkText" class="inp" rows="3" style="min-height:84px" placeholder="Чтобы восстановить, вставьте сюда копию"></textarea>' +
-      '<button class="btn ghost block" data-a="bkrestore">Восстановить из копии</button></section>';
+      '<button class="btn ghost block" data-a="bkrestore">Восстановить из копии</button><div class="small muted">Для зашифрованной копии нужен пароль. Если забыть пароль, восстановить данные невозможно.</div></section>';
     h += '<section class="card"><h2>Сброс данных</h2><div class="small muted">Сначала сохраните резервную копию. Отменить сброс нельзя.</div>' +
       '<button class="btn ghost block" data-a="resetfinance">Сбросить финансовые данные</button>' +
       '<button class="btn danger block" data-a="resetall">Полный сброс приложения</button></section>';
@@ -1486,6 +1495,29 @@ const TIPS = {
       else { const s = state.settings; s.income = { salary: 0, stipend: 0, extra: 0 }; s.credit.balance = 0; s.credit.fromSavings = 0; s.credit.due = ''; s.credit.setAt = Date.now(); s.accounts.forEach(function (ac) { ac.start = 0; }); s.wishes = []; }
       Store.saveSettings(); ui.sel = ui.del = null; render(); toast('Сброс выполнен.');
     }
+    else if (a === 'bksecure') {
+      if (!crypto || !crypto.subtle || !crypto.getRandomValues) { toast('Шифрование недоступно в этом браузере.'); return; }
+      const pass = window.prompt('Придумайте пароль для резервной копии (не менее 12 символов). Он НЕ сохраняется в приложении.');
+      if (pass === null) return;
+      if (pass.length < 12) { toast('Пароль должен содержать не менее 12 символов.'); return; }
+      const repeat = window.prompt('Повторите пароль для проверки.');
+      if (repeat !== pass) { toast('Пароли не совпадают.'); return; }
+      (async function () {
+        try {
+          const json = JSON.stringify({ v:2, settings:state.settings, months:state.months });
+          const salt = crypto.getRandomValues(new Uint8Array(16));
+          const iv = crypto.getRandomValues(new Uint8Array(12));
+          const keyMaterial = await crypto.subtle.importKey('raw', new TextEncoder().encode(pass), 'PBKDF2', false, ['deriveKey']);
+          const key = await crypto.subtle.deriveKey({name:'PBKDF2',salt,iterations:310000,hash:'SHA-256'},keyMaterial,{name:'AES-GCM',length:256},false,['encrypt']);
+          const encrypted = new Uint8Array(await crypto.subtle.encrypt({name:'AES-GCM',iv},key,new TextEncoder().encode(json)));
+          const b64 = arr => { let binary=''; for (let i=0;i<arr.length;i+=8192) binary+=String.fromCharCode.apply(null,arr.subarray(i,i+8192)); return btoa(binary); };
+          const packed = JSON.stringify({format:'balans-encrypted-v1',kdf:'PBKDF2-SHA256',iterations:310000,salt:b64(salt),iv:b64(iv),data:b64(encrypted)});
+          const area = $('#bkText'); if (!area) return;
+          area.value=packed; area.focus(); area.select();
+          toast('Зашифрованная копия готова. Скопируйте её и сохраните пароль отдельно.');
+        } catch(e) { toast('Не удалось зашифровать копию.'); }
+      })();
+    }
     else if (a === 'bkcopy') {
       const json = JSON.stringify({ v: 2, settings: state.settings, months: state.months });
       const manual = function () { const ta = $('#bkText'); ta.value = json; ta.focus(); ta.select(); toast('Скопируйте выделенный текст вручную.'); };
@@ -1495,6 +1527,26 @@ const TIPS = {
       const backupText = $('#bkText').value.trim();
       if (backupText.length > 5 * 1024 * 1024) { toast('Копия слишком большая (максимум 5 МБ).'); return; }
       let d; try { d = JSON.parse(backupText); } catch (er) { toast('Не удалось прочитать копию.'); return; }
+      if (d && d.format === 'balans-encrypted-v1') {
+        if (!crypto || !crypto.subtle || !crypto.getRandomValues) { toast('Шифрование недоступно.'); return; }
+        const password = window.prompt('Введите пароль зашифрованной копии.');
+        if (password === null) return;
+        (async function () {
+          try {
+            const decode = value => { if (typeof value !== 'string' || value.length > 7*1024*1024 || !/^[A-Za-z0-9+/]*={0,2}$/.test(value)) throw Error('invalid'); return Uint8Array.from(atob(value), c=>c.charCodeAt(0)); };
+            if (d.kdf !== 'PBKDF2-SHA256' || d.iterations !== 310000) throw Error('invalid');
+            const salt=decode(d.salt), iv=decode(d.iv), bytes=decode(d.data);
+            if (salt.length !== 16 || iv.length !== 12 || bytes.length < 16) throw Error('invalid');
+            const material=await crypto.subtle.importKey('raw',new TextEncoder().encode(password),'PBKDF2',false,['deriveKey']);
+            const key=await crypto.subtle.deriveKey({name:'PBKDF2',salt,iterations:310000,hash:'SHA-256'},material,{name:'AES-GCM',length:256},false,['decrypt']);
+            const plain=await crypto.subtle.decrypt({name:'AES-GCM',iv},key,bytes);
+            const area=$('#bkText'); if (!area) return;
+            area.value=new TextDecoder('utf-8',{fatal:true}).decode(plain);
+            const restore=document.querySelector('[data-a="bkrestore"]'); if (restore) restore.click();
+          } catch(e) { toast('Не удалось расшифровать: неверный пароль или повреждённая копия.'); }
+        })();
+        return;
+      }
       if (!d || typeof d !== 'object' || Array.isArray(d) || !d.settings || typeof d.settings !== 'object' || Array.isArray(d.settings) || typeof d.months !== 'object' || !d.months || Array.isArray(d.months)) { toast('Это не похоже на копию приложения.'); return; }
       const monthKeys = Object.keys(d.months);
       if (monthKeys.length > 240 || !Array.isArray(d.settings.accounts) && d.settings.accounts != null || Array.isArray(d.settings.accounts) && d.settings.accounts.length > 100) { toast('Некорректная структура копии.'); return; }

@@ -13,8 +13,10 @@
       const root = document.documentElement;
       const safe = tg.safeAreaInset || {};
       const content = tg.contentSafeAreaInset || {};
-      root.style.setProperty('--tg-safe-area-inset-bottom', (Number(safe.bottom) || 0) + 'px');
-      root.style.setProperty('--tg-content-safe-area-inset-top', (Number(content.top) || 0) + 'px');
+      const bottom = Math.max(0, Number(safe.bottom) || 0, Number(content.bottom) || 0);
+      const top = Math.max(0, Number(content.top) || 0);
+      root.style.setProperty('--tg-bottom', bottom + 'px');
+      root.style.setProperty('--tg-top', top + 'px');
     };
     updateInsets();
     if (tg.onEvent) tg.onEvent('safeAreaChanged', updateInsets);
